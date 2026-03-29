@@ -1,16 +1,29 @@
 # ============================================================================
-# Naarni — Build & Deploy to Azure VM (B2ms)
+# Naarni — Build, Push to Docker Hub, Deploy to Azure VM
 # ============================================================================
-# Architecture:
-#   GitHub push → Build images on ACR → SSH into VM → docker compose pull → up
-#   SSL: Let's Encrypt (auto-renewing via certbot container)
-#   DNS: ai.naarni.com (A record on AWS Route 53 → Azure VM public IP)
+# Flow:
+#   1. Push to main → triggers this workflow
+#   2. Build 3 Docker images from your code
+#   3. Push to Docker Hub (naarnimd/naarni-ai-*)
+#   4. SSH into Azure VM → pull images → inject secrets → restart
 #
-# This is the same deployment pattern Onyx uses officially — battle-tested,
-# single VM, docker compose, nginx reverse proxy with SSL termination.
+# All credentials come from GitHub Secrets — never committed to code.
+#
+# GitHub Secrets required:
+#   DOCKERHUB_USERNAME        — Docker Hub username (naarnimd)
+#   DOCKERHUB_TOKEN           — Docker Hub access token
+#   VM_HOST                   — Azure VM public IP
+#   VM_USER                   — SSH username (naarni)
+#   VM_SSH_KEY                — SSH private key
+#   OAUTH_CLIENT_ID           — Azure AD app client ID
+#   OAUTH_CLIENT_SECRET       — Azure AD app client secret
+#   USER_AUTH_SECRET           — OIDC state token signing key
+#   POSTGRES_PASSWORD          — Database password
+#   S3_AWS_ACCESS_KEY_ID       — AWS S3 access key
+#   S3_AWS_SECRET_ACCESS_KEY   — AWS S3 secret key
 # ============================================================================
 
-name: Deploy Naarni to Azure
+name: Build & Deploy Naarni
 
 on:
   push:
@@ -18,22 +31,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: read
 
 env:
-  ACR_NAME: naarnicr
-  ACR_LOGIN_SERVER: naarnicr.azurecr.io
-  RESOURCE_GROUP: naarni-rg
-  VM_NAME: naarni-vm
-  DEPLOY_DIR: /opt/naarni
+  DOCKERHUB_ORG: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # Phase 1: Build Docker images and push to Azure Container Registry
+  # Phase 1: Build and push Docker images to Docker Hub
   # ──────────────────────────────────────────────────────────────────────────
   build:
-    name: Build & Push Images
+    name: Build & Push to Docker Hub
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -41,15 +49,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Login to ACR
-        run: az acr login --name ${{ env.ACR_NAME }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -61,8 +65,8 @@ jobs:
           file: backend/Dockerfile
           push: true
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-backend:${{ github.sha }}
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-backend:latest
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-backend:${{ github.sha }}
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -73,8 +77,8 @@ jobs:
           file: web/Dockerfile
           push: true
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-web:${{ github.sha }}
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-web:latest
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-web:${{ github.sha }}
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-web:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -85,13 +89,13 @@ jobs:
           file: backend/Dockerfile.model_server
           push: true
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-model-server:${{ github.sha }}
-            ${{ env.ACR_LOGIN_SERVER }}/naarni-model-server:latest
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-model-server:${{ github.sha }}
+            ${{ env.DOCKERHUB_ORG }}/naarni-ai-model-server:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Phase 2: SSH into Azure VM → pull new images → restart containers
+  # Phase 2: Deploy to Azure VM
   # ──────────────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to VM
@@ -100,6 +104,19 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Checkout code (for config files)
+        uses: actions/checkout@v4
+
+      - name: Copy deployment configs to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: "deployment/docker_compose/docker-compose.prod.yml,deployment/docker_compose/docker-compose.naarni.yml,deployment/docker_compose/.env.naarni-azure,deployment/docker_compose/.env.nginx.naarni,deployment/data/"
+          target: /opt/naarni/
+          overwrite: true
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
@@ -108,30 +125,55 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
             set -e
-            cd ${{ env.DEPLOY_DIR }}/deployment/docker_compose
+            cd /opt/naarni/deployment/docker_compose
 
-            # Login to ACR from the VM
-            az acr login --name ${{ env.ACR_NAME }} 2>/dev/null || \
-              docker login ${{ env.ACR_LOGIN_SERVER }} \
-                -u ${{ secrets.ACR_USERNAME }} \
-                -p ${{ secrets.ACR_PASSWORD }}
+            # ── Build .env from committed config + injected secrets ──
+            cp .env.naarni-azure .env
+            cp .env.nginx.naarni .env.nginx
 
-            # Pull the latest images
-            echo "Pulling new images..."
-            docker compose -f docker-compose.prod.yml pull
+            # Inject secrets (appended to .env — these override the placeholders)
+            cat >> .env <<'SECRETS_EOF'
 
-            # Rolling restart — zero-downtime for nginx
-            echo "Restarting services..."
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            # ── Injected from GitHub Secrets (never committed) ──
+            OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+            OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
+            USER_AUTH_SECRET=${{ secrets.USER_AUTH_SECRET }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            S3_AWS_ACCESS_KEY_ID=${{ secrets.S3_AWS_ACCESS_KEY_ID }}
+            S3_AWS_SECRET_ACCESS_KEY=${{ secrets.S3_AWS_SECRET_ACCESS_KEY }}
+            SECRETS_EOF
 
-            # Verify containers are running
-            echo "Container status:"
-            docker compose -f docker-compose.prod.yml ps
+            # ── Pull latest Naarni images ──
+            echo "=== Pulling images ==="
+            docker compose \
+              -f docker-compose.prod.yml \
+              -f docker-compose.naarni.yml \
+              pull 2>&1 | tail -5
 
+            # ── Start/restart services ──
+            echo "=== Starting services ==="
+            docker compose \
+              -f docker-compose.prod.yml \
+              -f docker-compose.naarni.yml \
+              up -d --remove-orphans 2>&1 | tail -20
+
+            # ── Verify ──
+            echo ""
+            echo "=== Container status ==="
+            docker compose \
+              -f docker-compose.prod.yml \
+              -f docker-compose.naarni.yml \
+              ps --format "table {{.Name}}\t{{.Status}}"
+
+            echo ""
+            echo "=== Memory usage ==="
+            free -h | head -3
+
+            echo ""
             echo "Deploy complete: $(date)"
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Phase 3: Verify the deployment is healthy
+  # Phase 3: Health check
   # ──────────────────────────────────────────────────────────────────────────
   health-check:
     name: Verify Deployment
@@ -141,25 +183,21 @@ jobs:
 
     steps:
       - name: Wait for services to stabilize
-        run: sleep 20
+        run: sleep 45
 
-      - name: Health check — API
+      - name: Health check
         run: |
           echo "Checking https://ai.naarni.com/api/health ..."
-          for i in $(seq 1 12); do
+          for i in $(seq 1 15); do
             STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "https://ai.naarni.com/api/health" || echo "000")
-            echo "  Attempt $i/12: HTTP $STATUS"
+            echo "  Attempt $i/15: HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
+              echo ""
               echo "API is healthy!"
+              curl -sk -o /dev/null -w "Frontend: HTTP %{http_code}\n" "https://ai.naarni.com"
               exit 0
             fi
             sleep 10
           done
-          echo "ERROR: API not healthy after 2 minutes"
+          echo "ERROR: API not healthy after 2.5 minutes"
           exit 1
-
-      - name: Health check — Frontend
-        run: |
-          STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "https://ai.naarni.com" || echo "000")
-          echo "Frontend: HTTP $STATUS"
-          [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ] && echo "OK" || echo "WARNING: may still be starting"

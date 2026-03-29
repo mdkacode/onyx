@@ -1,0 +1,27 @@
+# ============================================================================
+# Naarni image overrides
+# ============================================================================
+# Use with: docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d
+#
+# This overrides the upstream onyxdotapp/* images with your custom
+# Naarni images from Docker Hub. All other services (postgres, redis,
+# vespa, nginx, certbot) remain unchanged.
+#
+# Set NAARNI_DOCKERHUB_ORG in .env to your Docker Hub username/org.
+# ============================================================================
+
+services:
+  api_server:
+    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-backend:${IMAGE_TAG:-latest}
+
+  background:
+    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-backend:${IMAGE_TAG:-latest}
+
+  web_server:
+    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-web:${IMAGE_TAG:-latest}
+
+  inference_model_server:
+    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-model-server:${IMAGE_TAG:-latest}
+
+  indexing_model_server:
+    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-model-server:${IMAGE_TAG:-latest}
