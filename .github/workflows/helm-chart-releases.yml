@@ -3,7 +3,7 @@ name: Release Onyx Helm Charts
 on:
   push:
     branches:
-      - main
+      - disabled-for-fork
 
 permissions: write-all
 
