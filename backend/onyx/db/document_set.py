@@ -178,7 +178,7 @@ def make_doc_set_private(
 ) -> None:
     # May cause error if someone switches down to MIT from EE
     if user_ids or group_ids:
-        raise NotImplementedError("Onyx MIT does not support private Document Sets")
+        raise NotImplementedError("Naarni MIT does not support private Document Sets")
 
 
 def _check_if_cc_pairs_are_owned_by_groups(

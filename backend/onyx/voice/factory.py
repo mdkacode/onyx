@@ -1,3 +1,4 @@
+from onyx.configs.app_configs import VOICE_ENABLED
 from onyx.db.models import VoiceProvider
 from onyx.voice.interface import VoiceProviderInterface
 
@@ -15,6 +16,11 @@ def get_voice_provider(provider: VoiceProvider) -> VoiceProviderInterface:
     Raises:
         ValueError: If provider_type is not supported
     """
+    if not VOICE_ENABLED:
+        raise ValueError(
+            "Voice features are disabled. Set VOICE_ENABLED=true to enable STT/TTS."
+        )
+
     provider_type = provider.provider_type.lower()
 
     # Handle both SensitiveValue (from DB) and plain string (from temp model)

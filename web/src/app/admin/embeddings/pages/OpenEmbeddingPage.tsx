@@ -57,9 +57,9 @@ export default function OpenEmbeddingPage({
         </a>
         .
         <br />
-        <b>NOTE:</b> not all models listed will work with Onyx, since some have
-        unique interfaces or special requirements. If in doubt, reach out to the
-        Onyx team.
+        <b>NOTE:</b> not all models listed will work with Naarni, since some
+        have unique interfaces or special requirements. If in doubt, reach out
+        to the Naarni team.
       </Text>
       {!configureModel && (
         // TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved

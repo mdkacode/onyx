@@ -5,7 +5,7 @@ from enum import auto
 from enum import Enum
 
 
-ONYX_DEFAULT_APPLICATION_NAME = "Onyx"
+ONYX_DEFAULT_APPLICATION_NAME = "Naarni"
 ONYX_DISCORD_URL = "https://discord.gg/4NA5SbzrWb"
 ONYX_UTM_SOURCE = "onyx_app"
 SLACK_USER_TOKEN_PREFIX = "xoxp-"
@@ -37,10 +37,10 @@ ANONYMOUS_USER_COOKIE_NAME = "onyx_anonymous_user"
 ANONYMOUS_USER_INFO_ID = "__anonymous_user__"
 # Placeholder user for migrating no-auth data to first registered user
 NO_AUTH_PLACEHOLDER_USER_UUID = "00000000-0000-0000-0000-000000000001"
-NO_AUTH_PLACEHOLDER_USER_EMAIL = "no-auth-placeholder@onyx.app"
+NO_AUTH_PLACEHOLDER_USER_EMAIL = "no-auth-placeholder@naarni.app"
 # Real anonymous user in DB for anonymous access feature
 ANONYMOUS_USER_UUID = "00000000-0000-0000-0000-000000000002"
-ANONYMOUS_USER_EMAIL = "anonymous@onyx.app"
+ANONYMOUS_USER_EMAIL = "anonymous@naarni.app"
 
 # For chunking/processing chunks
 RETURN_SEPARATOR = "\n\r\n"
@@ -53,9 +53,9 @@ ONYX_METADATA_FILENAME = ".onyx_metadata.json"
 
 # Messages
 DISABLED_GEN_AI_MSG = (
-    "Your System Admin has disabled the Generative AI functionalities of Onyx.\n"
+    "Your System Admin has disabled the Generative AI functionalities of Naarni.\n"
     "Please contact them if you wish to have this enabled.\n"
-    "You can still use Onyx as a search engine."
+    "You can still use Naarni as a search engine."
 )
 
 #####
@@ -260,10 +260,13 @@ class DocumentSource(str, Enum):
 
 class FederatedConnectorSource(str, Enum):
     FEDERATED_SLACK = "federated_slack"
+    FEDERATED_M365 = "federated_m365"
 
     def to_non_federated_source(self) -> DocumentSource | None:
         if self == FederatedConnectorSource.FEDERATED_SLACK:
             return DocumentSource.SLACK
+        if self == FederatedConnectorSource.FEDERATED_M365:
+            return DocumentSource.SHAREPOINT
         return None
 
 

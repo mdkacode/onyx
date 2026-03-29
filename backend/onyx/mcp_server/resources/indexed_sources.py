@@ -29,7 +29,7 @@ async def indexed_sources_resource() -> dict[str, Any]:
     sources = await get_indexed_sources(access_token)
 
     logger.info(
-        "Onyx MCP Server: indexed_sources resource returning %s entries",
+        "Naarni MCP Server: indexed_sources resource returning %s entries",
         len(sources),
     )
 

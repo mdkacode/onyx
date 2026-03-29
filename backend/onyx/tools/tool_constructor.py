@@ -40,6 +40,9 @@ from onyx.tools.tool_implementations.memory.memory_tool import MemoryTool
 from onyx.tools.tool_implementations.open_url.open_url_tool import (
     OpenURLTool,
 )
+from onyx.tools.tool_implementations.pptx_generator.pptx_generator_tool import (
+    PptxGeneratorTool,
+)
 from onyx.tools.tool_implementations.python.python_tool import PythonTool
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.web_search_tool import (
@@ -262,6 +265,15 @@ def construct_tools(
                         emitter=emitter,
                         user_file_ids=cfg.user_file_ids,
                         chat_file_ids=cfg.chat_file_ids,
+                    )
+                ]
+
+            # Handle PPTX Generator Tool
+            elif tool_cls.__name__ == PptxGeneratorTool.__name__:
+                tool_dict[db_tool_model.id] = [
+                    PptxGeneratorTool(
+                        tool_id=db_tool_model.id,
+                        emitter=emitter,
                     )
                 ]
 

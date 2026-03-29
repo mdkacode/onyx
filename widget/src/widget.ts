@@ -1,5 +1,5 @@
 /**
- * Onyx Chat Widget - Main Component
+ * Naarni Chat Widget - Main Component
  * Orchestrates launcher/inline modes and manages widget lifecycle
  */
 
@@ -17,8 +17,8 @@ import { processPacket } from "./services/stream-parser";
 import { saveSession, loadSession, clearSession } from "./utils/storage";
 import { DEFAULT_LOGO } from "./assets/logo";
 
-@customElement("onyx-chat-widget")
-export class OnyxChatWidget extends LitElement {
+@customElement("naarni-chat-widget")
+export class NaarniChatWidget extends LitElement {
   static styles = [theme, widgetStyles];
 
   // Configuration attributes
@@ -541,11 +541,11 @@ export class OnyxChatWidget extends LitElement {
         <div class="powered-by">
           Powered by
           <a
-            href="https://onyx.app"
+            href="https://naarni.com"
             target="_blank"
             rel="noopener noreferrer"
             style="text-decoration: underline;"
-            >Onyx</a
+            >Naarni</a
           >
         </div>
       </div>
@@ -601,6 +601,6 @@ export class OnyxChatWidget extends LitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    "onyx-chat-widget": OnyxChatWidget;
+    "naarni-chat-widget": NaarniChatWidget;
   }
 }

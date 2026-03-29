@@ -51,6 +51,9 @@ GENERATIVE_MODEL_ACCESS_CHECK_FREQ = int(
 # Controls whether users can use User Knowledge (personal documents) in assistants
 DISABLE_USER_KNOWLEDGE = os.environ.get("DISABLE_USER_KNOWLEDGE", "").lower() == "true"
 
+# Voice features (STT/TTS) — disabled by default to avoid Azure AI Speech costs
+VOICE_ENABLED = os.environ.get("VOICE_ENABLED", "false").lower() == "true"
+
 # Disables vector DB (Vespa/OpenSearch) entirely. When True, connectors and RAG search
 # are disabled but core chat, tools, user file uploads, and Projects still work.
 DISABLE_VECTOR_DB = os.environ.get("DISABLE_VECTOR_DB", "").lower() == "true"
@@ -879,7 +882,7 @@ DISABLE_TELEMETRY = os.environ.get("DISABLE_TELEMETRY", "").lower() == "true"
 # Braintrust Configuration
 #####
 # Braintrust project name
-BRAINTRUST_PROJECT = os.environ.get("BRAINTRUST_PROJECT", "Onyx")
+BRAINTRUST_PROJECT = os.environ.get("BRAINTRUST_PROJECT", "Naarni")
 # Braintrust API key - if provided, Braintrust tracing will be enabled
 BRAINTRUST_API_KEY = os.environ.get("BRAINTRUST_API_KEY") or ""
 # Maximum concurrency for Braintrust evaluations

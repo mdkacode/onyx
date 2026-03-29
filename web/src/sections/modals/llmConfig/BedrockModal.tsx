@@ -254,7 +254,7 @@ function BedrockModalInternals({
           <Card backgroundVariant="none" borderVariant="solid">
             <Content
               icon={SvgAlertCircle}
-              title="Onyx will use the IAM role attached to the environment it’s running in to authenticate."
+              title="Naarni will use the IAM role attached to the environment it’s running in to authenticate."
               variant="body"
               sizePreset="main-ui"
             />

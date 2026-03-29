@@ -22,6 +22,9 @@ from onyx.server.query_and_chat.streaming_models import CustomToolErrorInfo
 from onyx.server.query_and_chat.streaming_models import GeneratedImage
 from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tools.tool_implementations.memory.models import MemoryToolResponse
+from onyx.tools.tool_implementations.pptx_generator.models import (
+    FinalPptxGenerationResponse,
+)
 
 
 TOOL_CALL_MSG_FUNC_NAME = "function_name"
@@ -87,6 +90,8 @@ class ToolResponse(BaseModel):
     rich_response: (
         # This comes from image generation, image needs to be saved and the packet about it's location needs to be emitted
         FinalImageGenerationResponse
+        # This comes from PPTX generation
+        | FinalPptxGenerationResponse
         # This comes from internal search / web search, search docs need to be saved, already emitted by the tool
         | SearchDocsResponse
         # This comes from the memory tool, memory needs to be persisted to the database

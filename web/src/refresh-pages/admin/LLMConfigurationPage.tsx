@@ -464,7 +464,7 @@ export default function LLMConfigurationPage() {
         >
           <Content
             title="Add Provider"
-            description="Onyx supports both popular providers and self-hosted models."
+            description="Naarni supports both popular providers and self-hosted models."
             sizePreset="main-content"
             variant="section"
           />

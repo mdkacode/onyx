@@ -1,0 +1,165 @@
+# ============================================================================
+# Naarni — Build & Deploy to Azure VM (B2ms)
+# ============================================================================
+# Architecture:
+#   GitHub push → Build images on ACR → SSH into VM → docker compose pull → up
+#   SSL: Let's Encrypt (auto-renewing via certbot container)
+#   DNS: ai.naarni.com (A record on AWS Route 53 → Azure VM public IP)
+#
+# This is the same deployment pattern Onyx uses officially — battle-tested,
+# single VM, docker compose, nginx reverse proxy with SSL termination.
+# ============================================================================
+
+name: Deploy Naarni to Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: naarnicr
+  ACR_LOGIN_SERVER: naarnicr.azurecr.io
+  RESOURCE_GROUP: naarni-rg
+  VM_NAME: naarni-vm
+  DEPLOY_DIR: /opt/naarni
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Phase 1: Build Docker images and push to Azure Container Registry
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-backend:${{ github.sha }}
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & Push Web
+        uses: docker/build-push-action@v6
+        with:
+          context: web/
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-web:${{ github.sha }}
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & Push Model Server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile.model_server
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-model-server:${{ github.sha }}
+            ${{ env.ACR_LOGIN_SERVER }}/naarni-model-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Phase 2: SSH into Azure VM → pull new images → restart containers
+  # ──────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to VM
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ env.DEPLOY_DIR }}/deployment/docker_compose
+
+            # Login to ACR from the VM
+            az acr login --name ${{ env.ACR_NAME }} 2>/dev/null || \
+              docker login ${{ env.ACR_LOGIN_SERVER }} \
+                -u ${{ secrets.ACR_USERNAME }} \
+                -p ${{ secrets.ACR_PASSWORD }}
+
+            # Pull the latest images
+            echo "Pulling new images..."
+            docker compose -f docker-compose.prod.yml pull
+
+            # Rolling restart — zero-downtime for nginx
+            echo "Restarting services..."
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            # Verify containers are running
+            echo "Container status:"
+            docker compose -f docker-compose.prod.yml ps
+
+            echo "Deploy complete: $(date)"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Phase 3: Verify the deployment is healthy
+  # ──────────────────────────────────────────────────────────────────────────
+  health-check:
+    name: Verify Deployment
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 20
+
+      - name: Health check — API
+        run: |
+          echo "Checking https://ai.naarni.com/api/health ..."
+          for i in $(seq 1 12); do
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "https://ai.naarni.com/api/health" || echo "000")
+            echo "  Attempt $i/12: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "API is healthy!"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: API not healthy after 2 minutes"
+          exit 1
+
+      - name: Health check — Frontend
+        run: |
+          STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "https://ai.naarni.com" || echo "000")
+          echo "Frontend: HTTP $STATUS"
+          [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ] && echo "OK" || echo "WARNING: may still be starting"

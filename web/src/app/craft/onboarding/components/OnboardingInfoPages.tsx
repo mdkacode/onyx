@@ -57,7 +57,7 @@ export default function OnboardingInfoPages({
         </Text>
         <img
           src="/craft_demo_image_1.png"
-          alt="Onyx Craft"
+          alt="Naarni Craft"
           className="max-w-full h-auto rounded-12"
         />
         <Text mainContentBody text04 className="text-center">
@@ -77,7 +77,7 @@ export default function OnboardingInfoPages({
       </Text>
       <img
         src="/craft_demo_image_2.png"
-        alt="Onyx Craft"
+        alt="Naarni Craft"
         className="max-w-full h-auto rounded-12"
       />
     </div>

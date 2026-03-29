@@ -73,14 +73,14 @@ async def get_indexed_sources(
     except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
         # Re-raise known exception types (httpx errors and validation errors)
         logger.error(
-            "Onyx MCP Server: Failed to fetch indexed sources",
+            "Naarni MCP Server: Failed to fetch indexed sources",
             exc_info=True,
         )
         raise
     except Exception as exc:
         # Wrap unexpected exceptions
         logger.error(
-            "Onyx MCP Server: Unexpected error fetching indexed sources",
+            "Naarni MCP Server: Unexpected error fetching indexed sources",
             exc_info=True,
         )
         raise RuntimeError(f"Failed to fetch indexed sources: {exc}") from exc

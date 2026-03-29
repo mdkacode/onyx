@@ -1,7 +1,7 @@
 import { css } from "lit";
 
 /**
- * Onyx Chat Widget - Component Styles
+ * Naarni Chat Widget - Component Styles
  * All styling for the main widget component
  */
 export const widgetStyles = css`

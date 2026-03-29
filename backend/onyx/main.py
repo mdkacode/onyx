@@ -63,6 +63,7 @@ from onyx.db.engine.sql_engine import SqlEngine
 from onyx.error_handling.exceptions import register_onyx_exception_handlers
 from onyx.file_store.file_store import get_default_file_store
 from onyx.hooks.registry import validate_registry
+from onyx.server.admin.user_usage_api import router as user_usage_router
 from onyx.server.api_key.api import router as api_key_router
 from onyx.server.auth_check import check_router_auth
 from onyx.server.documents.cc_pair import router as cc_pair_router
@@ -300,7 +301,7 @@ def validate_no_vector_db_settings() -> None:
     if ENABLE_CRAFT:
         raise RuntimeError(
             "DISABLE_VECTOR_DB cannot be used with ENABLE_CRAFT. "
-            "Onyx Craft requires background workers for sandbox lifecycle "
+            "Naarni Craft requires background workers for sandbox lifecycle "
             "management, which are removed in no-vector-DB deployments. "
             "Disable Craft (ENABLE_CRAFT=false) when disabling the vector database."
         )
@@ -426,11 +427,11 @@ def log_http_error(request: Request, exc: Exception) -> JSONResponse:
 
 def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     application = FastAPI(
-        title="Onyx Backend",
+        title="Naarni Backend",
         version=__version__,
-        description="Onyx API for AI-powered chat with search, document indexing, agents, actions, and more",
+        description="Naarni API for AI-powered chat with search, document indexing, agents, actions, and more",
         servers=[
-            {"url": f"{WEB_DOMAIN.rstrip('/')}/api", "description": "Onyx API Server"}
+            {"url": f"{WEB_DOMAIN.rstrip('/')}/api", "description": "Naarni API Server"}
         ],
         lifespan=lifespan_override or lifespan,
     )
@@ -520,6 +521,7 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     include_router_with_global_prefix_prepended(application, mcp_router)
     include_router_with_global_prefix_prepended(application, mcp_admin_router)
 
+    include_router_with_global_prefix_prepended(application, user_usage_router)
     include_router_with_global_prefix_prepended(application, pat_router)
 
     if AUTH_TYPE == AuthType.BASIC or AUTH_TYPE == AuthType.CLOUD:

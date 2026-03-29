@@ -16,4 +16,8 @@ FEDERATED_CONNECTOR_CLASS_MAP = {
         module_path="onyx.federated_connectors.slack.federated_connector",
         class_name="SlackFederatedConnector",
     ),
+    FederatedConnectorSource.FEDERATED_M365: FederatedConnectorMapping(
+        module_path="onyx.federated_connectors.m365.federated_connector",
+        class_name="M365FederatedConnector",
+    ),
 }

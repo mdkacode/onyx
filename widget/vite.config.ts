@@ -16,8 +16,8 @@ export default defineConfig(({ mode }) => {
     build: {
       lib: {
         entry: resolve(__dirname, "src/index.ts"),
-        name: "OnyxWidget",
-        fileName: "onyx-widget",
+        name: "NaarniWidget",
+        fileName: "naarni-widget",
         formats: ["es"],
       },
       rollupOptions: {

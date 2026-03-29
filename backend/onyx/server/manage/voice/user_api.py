@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from onyx.auth.users import current_user
+from onyx.configs.app_configs import VOICE_ENABLED
 from onyx.db.engine.sql_engine import get_session
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.models import User
@@ -46,6 +47,9 @@ def get_voice_status(
     db_session: Session = Depends(get_session),
 ) -> VoiceStatusResponse:
     """Check whether STT and TTS providers are configured and ready."""
+    if not VOICE_ENABLED:
+        return VoiceStatusResponse(stt_enabled=False, tts_enabled=False)
+
     stt_provider = fetch_default_stt_provider(db_session)
     tts_provider = fetch_default_tts_provider(db_session)
     return VoiceStatusResponse(
