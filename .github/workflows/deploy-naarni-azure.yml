@@ -61,7 +61,7 @@ jobs:
       - name: Build & Push Backend
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: backend/
           file: backend/Dockerfile
           push: true
           tags: |
@@ -85,7 +85,7 @@ jobs:
       - name: Build & Push Model Server
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: backend/
           file: backend/Dockerfile.model_server
           push: true
           tags: |
