@@ -585,22 +585,34 @@ export const OnyxIcon = ({
     <svg
       style={{ width: `${size}px`, height: `${size}px` }}
       className={`w-[${size}px] h-[${size}px] ` + className}
-      viewBox="0 0 56 56"
+      viewBox="0 0 100 100"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <rect x="4" y="4" width="48" height="48" rx="12" fill="currentColor" />
-      <text
-        x="28"
-        y="38"
-        textAnchor="middle"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontWeight="bold"
-        fontSize="32"
-        fill="white"
-      >
-        N
-      </text>
+      {/* NaArNi Logo — 3 hexagons with gradient */}
+      <defs>
+        <linearGradient id="naarniGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#7EEDB4" />
+          <stop offset="100%" stopColor="#2ECC71" />
+        </linearGradient>
+      </defs>
+      {/* Top hexagon */}
+      <polygon
+        points="50,5 68,15 68,35 50,45 32,35 32,15"
+        fill="url(#naarniGrad)"
+      />
+      {/* Bottom-left hexagon */}
+      <polygon
+        points="32,35 50,45 50,65 32,75 14,65 14,45"
+        fill="url(#naarniGrad)"
+      />
+      {/* Bottom-right hexagon */}
+      <polygon
+        points="68,35 86,45 86,65 68,75 50,65 50,45"
+        fill="url(#naarniGrad)"
+      />
+      {/* Center white hexagon (overlap area) */}
+      <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
     </svg>
   );
 };
@@ -608,7 +620,7 @@ export const OnyxLogoTypeIcon = ({
   size = 16,
   className = defaultTailwindCSS,
 }: IconProps) => {
-  const aspectRatio = 4.0; // width / height ratio for "Naarni" logotype
+  const aspectRatio = 3.5;
   const height = size / aspectRatio;
 
   return (
@@ -617,33 +629,43 @@ export const OnyxLogoTypeIcon = ({
       xmlns="http://www.w3.org/2000/svg"
       width={size}
       height={height}
-      viewBox="0 0 400 100"
+      viewBox="0 0 420 120"
       style={{ width: `${size}px`, height: `${height}px` }}
       className={`w-[${size}px] h-[${height}px] ` + className}
     >
-      <rect x="4" y="20" width="60" height="60" rx="14" fill="currentColor" />
+      <defs>
+        <linearGradient id="naarniLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#7EEDB4" />
+          <stop offset="100%" stopColor="#2ECC71" />
+        </linearGradient>
+      </defs>
+      {/* Hexagon icon — scaled down */}
+      <g transform="translate(5,10) scale(0.55)">
+        <polygon
+          points="50,5 68,15 68,35 50,45 32,35 32,15"
+          fill="url(#naarniLogoGrad)"
+        />
+        <polygon
+          points="32,35 50,45 50,65 32,75 14,65 14,45"
+          fill="url(#naarniLogoGrad)"
+        />
+        <polygon
+          points="68,35 86,45 86,65 68,75 50,65 50,45"
+          fill="url(#naarniLogoGrad)"
+        />
+        <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
+      </g>
+      {/* NaArNi text */}
       <text
-        x="34"
-        y="64"
-        textAnchor="middle"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontWeight="bold"
-        fontSize="40"
-        fill="white"
+        x="80"
+        y="78"
+        fontFamily="'Georgia', 'Times New Roman', serif"
+        fontWeight="700"
+        fontSize="56"
+        letterSpacing="2"
+        fill="#1B2A4A"
       >
-        N
-      </text>
-      <text
-        x="230"
-        y="70"
-        textAnchor="middle"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontWeight="600"
-        fontSize="52"
-        letterSpacing="4"
-        fill="currentColor"
-      >
-        Naarni
+        NaArNi
       </text>
     </svg>
   );

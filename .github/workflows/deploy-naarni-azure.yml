@@ -23,7 +23,7 @@
 #   S3_AWS_SECRET_ACCESS_KEY   — AWS S3 secret key
 # ============================================================================
 
-name: Build & Deploy Naarni
+name: NaArNi Gyan - Build & Deploy
 
 on:
   push:
