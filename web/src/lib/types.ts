@@ -556,6 +556,18 @@ export const federatedSourceToRegularSource = (
   return maybeFederatedSource;
 };
 
+export const regularSourceToFederatedSource = (
+  source: ValidSources | string
+): string => {
+  if (source === ValidSources.Slack || source === "slack") {
+    return "federated_slack";
+  }
+  if (source === ValidSources.Sharepoint || source === "sharepoint") {
+    return "federated_m365";
+  }
+  return `federated_${source}`;
+};
+
 export const validAutoSyncSources = [
   ValidSources.Confluence,
   ValidSources.Jira,

@@ -3,6 +3,8 @@ import {
   ConfigurableSources,
   FederatedConnectorDetail,
   CredentialSchemaResponse,
+  federatedSourceToRegularSource,
+  ValidSources,
 } from "@/lib/types";
 
 interface UseFederatedConnectorResult {
@@ -44,15 +46,14 @@ export function useFederatedConnector(
         const connectorData: FederatedConnectorDetail =
           await connectorResponse.json();
 
-        // Extract source type from the federated source string (remove 'federated_' prefix)
-        const extractedSourceType = connectorData.source.replace(
-          /^federated_/,
-          ""
+        // Map federated source to its base configurable source
+        const extractedSourceType = federatedSourceToRegularSource(
+          connectorData.source as ValidSources
         ) as ConfigurableSources;
 
-        // Now fetch credential schema and set state in parallel
+        // Now fetch credential schema using the original federated source name
         const schemaPromise = fetch(
-          `/api/federated/sources/federated_${extractedSourceType}/credentials/schema`
+          `/api/federated/sources/${connectorData.source}/credentials/schema`
         );
 
         // Set the data we already have

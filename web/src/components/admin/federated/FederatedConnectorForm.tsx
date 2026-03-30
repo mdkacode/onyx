@@ -10,6 +10,7 @@ import {
   FederatedConnectorCreateRequest,
   FederatedConnectorDetail,
   CredentialSchemaResponse,
+  regularSourceToFederatedSource,
 } from "@/lib/types";
 import { getSourceMetadata } from "@/lib/sources";
 import { SourceIcon } from "@/components/SourceIcon";
@@ -67,7 +68,9 @@ async function validateCredentials(
 ): Promise<{ success: boolean; message: string }> {
   try {
     const response = await fetch(
-      `/api/federated/sources/federated_${source}/credentials/validate`,
+      `/api/federated/sources/${regularSourceToFederatedSource(
+        source
+      )}/credentials/validate`,
       {
         method: "POST",
         headers: {
@@ -108,7 +111,7 @@ async function createFederatedConnector(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        source: `federated_${source}`,
+        source: regularSourceToFederatedSource(source),
         credentials,
         config: config || {},
       } as FederatedConnectorCreateRequest),
@@ -228,7 +231,9 @@ export function FederatedConnectorForm({
         setIsLoadingSchema(true);
         try {
           const response = await fetch(
-            `/api/federated/sources/federated_${connector}/credentials/schema`
+            `/api/federated/sources/${regularSourceToFederatedSource(
+              connector
+            )}/credentials/schema`
           );
 
           if (!response.ok) {
@@ -263,7 +268,9 @@ export function FederatedConnectorForm({
     const fetchConfigurationSchema = async () => {
       try {
         const response = await fetch(
-          `/api/federated/sources/federated_${connector}/configuration/schema`
+          `/api/federated/sources/${regularSourceToFederatedSource(
+            connector
+          )}/configuration/schema`
         );
 
         if (!response.ok) {
