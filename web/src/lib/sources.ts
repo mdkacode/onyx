@@ -47,6 +47,7 @@ import {
   DrupalWikiIcon,
   EmailIcon,
   TestRailIcon,
+  OutlookIcon,
 } from "@/components/icons/icons";
 import { ValidSources } from "./types";
 import { SourceCategory, SourceMetadata } from "./search/interfaces";
@@ -75,7 +76,7 @@ interface PartialSourceMetadata {
 }
 
 type SourceMap = {
-  [K in ValidSources | "federated_slack"]: PartialSourceMetadata;
+  [K in ValidSources]: PartialSourceMetadata;
 };
 
 const slackMetadata = {
@@ -90,6 +91,16 @@ const slackMetadata = {
   federatedTooltip:
     "⚠️ WARNING: Federated Slack results in significantly greater latency and lower search quality.",
   baseSourceType: "slack",
+};
+
+const m365Metadata = {
+  icon: OutlookIcon,
+  displayName: "Microsoft 365 (Outlook)",
+  category: SourceCategory.Messaging,
+  federated: true,
+  federatedTooltip:
+    "Connect your individual Outlook account to search and chat over your emails.",
+  baseSourceType: "sharepoint" as ValidSources,
 };
 
 export const SOURCE_METADATA_MAP: SourceMap = {
@@ -108,6 +119,9 @@ export const SOURCE_METADATA_MAP: SourceMap = {
     category: SourceCategory.Wiki,
     docs: `${DOCS_ADMINS_PATH}/connectors/official/sharepoint`,
     isPopular: true,
+    federated: true,
+    federatedTooltip:
+      "Connect your individual Microsoft 365 account (Outlook, OneDrive, SharePoint) via OAuth.",
   },
   coda: {
     icon: CodaIcon,
@@ -294,6 +308,7 @@ export const SOURCE_METADATA_MAP: SourceMap = {
   // Messaging
   slack: slackMetadata,
   federated_slack: slackMetadata,
+  federated_m365: m365Metadata,
   teams: {
     icon: TeamsIcon,
     displayName: "Teams",
@@ -484,8 +499,9 @@ export function listSourceMetadata(): SourceMetadata[] {
         source !== "not_applicable" &&
         source !== "ingestion_api" &&
         source !== "mock_connector" &&
-        // use the "regular" slack connector when listing
+        // use the "regular" connector when listing federated sources
         source !== "federated_slack" &&
+        source !== "federated_m365" &&
         // user_file is for internal use (projects), not the Add Connector page
         source !== "user_file"
     )

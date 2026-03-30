@@ -466,6 +466,7 @@ export const credentialTemplates: Record<ValidSources, any> = {
   not_applicable: null,
   ingestion_api: null,
   federated_slack: null,
+  federated_m365: null,
   discord: { discord_bot_token: "" } as DiscordCredentialJson,
 
   // NOTE: These are Special Cases

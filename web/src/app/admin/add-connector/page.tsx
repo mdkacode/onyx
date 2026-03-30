@@ -236,7 +236,9 @@ export default function Page() {
             firstSource.federated && federatedConnectors
               ? federatedConnectors.find(
                   (connector) =>
-                    connector.source === `federated_${firstSource.internalName}`
+                    federatedSourceToRegularSource(
+                      connector.source as ValidSources
+                    ) === firstSource.internalName
                 )
               : null;
 

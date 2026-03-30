@@ -267,7 +267,7 @@ export interface ConnectorIndexingStatusLiteResponse {
 
 export interface FederatedConnectorDetail {
   id: number;
-  source: ValidSources.FederatedSlack;
+  source: ValidSources.FederatedSlack | ValidSources.FederatedM365;
   name: string;
   credentials: Record<string, any>;
   config: Record<string, any>;
@@ -541,6 +541,7 @@ export enum ValidSources {
 
   // Federated Connectors
   FederatedSlack = "federated_slack",
+  FederatedM365 = "federated_m365",
 }
 
 export const federatedSourceToRegularSource = (
@@ -548,6 +549,9 @@ export const federatedSourceToRegularSource = (
 ): ValidSources => {
   if (maybeFederatedSource === ValidSources.FederatedSlack) {
     return ValidSources.Slack;
+  }
+  if (maybeFederatedSource === ValidSources.FederatedM365) {
+    return ValidSources.Sharepoint;
   }
   return maybeFederatedSource;
 };
@@ -571,7 +575,8 @@ export type ConfigurableSources = Exclude<
   ValidSources,
   | ValidSources.NotApplicable
   | ValidSources.IngestionApi
-  | ValidSources.FederatedSlack // is part of ValiedSources.Slack
+  | ValidSources.FederatedSlack // is part of ValidSources.Slack
+  | ValidSources.FederatedM365 // is part of ValidSources.Sharepoint
   | ValidSources.UserFile
   | ValidSources.CraftFile // User Library - managed through dedicated UI
 >;
