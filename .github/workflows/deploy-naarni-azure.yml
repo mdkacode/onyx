@@ -127,14 +127,11 @@ jobs:
             set -e
             cd /opt/naarni/deployment/docker_compose
 
-            # ── Build .env from committed config + injected secrets ──
+            # ── Build .env: merge config + secrets ──
+            # IMPORTANT: Never use 'down -v' or remove volumes — data must persist
             cp .env.naarni-azure .env
             cp .env.nginx.naarni .env.nginx
-
-            # Inject secrets (appended to .env — these override the placeholders)
             cat >> .env <<'SECRETS_EOF'
-
-            # ── Injected from GitHub Secrets (never committed) ──
             OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
             OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             USER_AUTH_SECRET=${{ secrets.USER_AUTH_SECRET }}
@@ -143,32 +140,43 @@ jobs:
             S3_AWS_SECRET_ACCESS_KEY=${{ secrets.S3_AWS_SECRET_ACCESS_KEY }}
             SECRETS_EOF
 
-            # ── Pull latest Naarni images ──
+            # ── Pull new images only (NO restart yet) ──
             echo "=== Pulling images ==="
-            docker compose \
-              -f docker-compose.prod.yml \
-              -f docker-compose.naarni.yml \
-              pull 2>&1 | tail -5
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml pull api_server web_server background 2>&1 | tail -5
 
-            # ── Start/restart services ──
-            echo "=== Starting services ==="
-            docker compose \
-              -f docker-compose.prod.yml \
-              -f docker-compose.naarni.yml \
-              up -d --remove-orphans 2>&1 | tail -20
+            # ── Safe rolling restart: NEVER touch DB/Redis/Vespa ──
+            # Infrastructure (DB, Redis, Vespa) stays untouched — no restart, no recreate
+            echo "=== Restarting app containers only (DB/Redis/Vespa untouched) ==="
 
-            # ── Verify ──
+            # Step 1: API server (runs migrations automatically on start)
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d --no-deps --force-recreate api_server 2>&1 | tail -3
+
+            # Wait for API to be healthy
+            echo "Waiting for API..."
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+                echo "  API healthy after ${i}0s"
+                break
+              fi
+              sleep 10
+            done
+
+            # Step 2: Background workers
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d --no-deps --force-recreate background 2>&1 | tail -3
+
+            # Step 3: Web server
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d --no-deps --force-recreate web_server 2>&1 | tail -3
+            sleep 5
+
+            # Step 4: Reload nginx (no recreate — just signal reload)
+            docker exec onyx-nginx-1 nginx -s reload 2>/dev/null || \
+              docker restart onyx-nginx-1 2>/dev/null
+
             echo ""
-            echo "=== Container status ==="
-            docker compose \
-              -f docker-compose.prod.yml \
-              -f docker-compose.naarni.yml \
-              ps --format "table {{.Name}}\t{{.Status}}"
-
+            echo "=== Status ==="
+            docker ps --format "table {{.Names}}\t{{.Status}}" | sort
             echo ""
-            echo "=== Memory usage ==="
             free -h | head -3
-
             echo ""
             echo "Deploy complete: $(date)"
 

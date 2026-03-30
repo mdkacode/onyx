@@ -1,27 +1,125 @@
 # ============================================================================
-# Naarni image overrides
+# Naarni Production Overrides — Stability Hardened
 # ============================================================================
 # Use with: docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d
 #
-# This overrides the upstream onyxdotapp/* images with your custom
-# Naarni images from Docker Hub. All other services (postgres, redis,
-# vespa, nginx, certbot) remain unchanged.
-#
-# Set NAARNI_DOCKERHUB_ORG in .env to your Docker Hub username/org.
+# Key decisions:
+#   - Local model servers DISABLED (using Azure OpenAI for embeddings)
+#   - OpenSearch DISABLED (using Vespa only)
+#   - Health checks on all critical services
+#   - Proper startup ordering: DB/Redis → API → Web → Nginx
+#   - Memory limits to prevent OOM
 # ============================================================================
 
 services:
+  # ── Database ──────────────────────────────────────────────────────────
+  relational_db:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  cache:
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── Vespa Search ─────────────────────────────────────────────────────
+  index:
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:19071/state/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  # ── API Server (waits for DB + Redis + Vespa) ────────────────────────
   api_server:
     image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-backend:${IMAGE_TAG:-latest}
+    depends_on:
+      relational_db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      index:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8080/health\")' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    stop_grace_period: 30s
 
+  # ── Background Workers ──────────────────────────────────────────────
   background:
     image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-backend:${IMAGE_TAG:-latest}
+    depends_on:
+      relational_db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      index:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    stop_grace_period: 30s
 
+  # ── Web Server (waits for API) ──────────────────────────────────────
   web_server:
     image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-web:${IMAGE_TAG:-latest}
+    depends_on:
+      api_server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-  inference_model_server:
-    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-model-server:${IMAGE_TAG:-latest}
+  # ── Nginx (waits for API + Web to be healthy — prevents 502s) ───────
+  nginx:
+    depends_on:
+      api_server:
+        condition: service_healthy
+      web_server:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
-  indexing_model_server:
-    image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-model-server:${IMAGE_TAG:-latest}
+  # ── MinIO (keep minimal — prod compose depends on it) ──────────────
+  minio:
+    deploy:
+      resources:
+        limits:
+          memory: 256M

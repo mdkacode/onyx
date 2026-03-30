@@ -29,6 +29,7 @@ SCOPES = [
     "offline_access",
     "Files.Read.All",
     "Sites.Read.All",
+    "Mail.Read",
 ]
 
 MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
@@ -324,26 +325,30 @@ class M365FederatedConnector(FederatedConnector):
         # Build entity types based on search scope
         entity_types = ["driveItem"]
 
-        # Build the search request body
-        search_request: dict[str, Any] = {
-            "requests": [
-                {
-                    "entityTypes": entity_types,
-                    "query": {"queryString": query_string},
-                    "from": 0,
-                    "size": max_results,
-                }
-            ]
-        }
+        # Build the search requests — files + emails in parallel
+        search_requests: list[dict[str, Any]] = [
+            {
+                "entityTypes": entity_types,
+                "query": {"queryString": query_string},
+                "from": 0,
+                "size": max_results,
+            },
+            {
+                "entityTypes": ["message"],
+                "query": {"queryString": query_string},
+                "from": 0,
+                "size": max_results,
+            },
+        ]
 
-        # Add scope-specific filters
+        search_request: dict[str, Any] = {"requests": search_requests}
+
+        # Add scope-specific filters (only for file search, not email)
         if config.search_scope == "sharepoint_only":
-            # Filter to only SharePoint results (exclude personal OneDrive)
             search_request["requests"][0]["query"][
                 "queryString"
             ] = f'({query_string}) AND (path:"https://*/sites/*")'
         elif config.search_scope == "onedrive_only":
-            # Filter to only OneDrive results
             search_request["requests"][0]["query"][
                 "queryString"
             ] = f'({query_string}) AND (path:"https://*/personal/*")'
@@ -408,6 +413,8 @@ class M365FederatedConnector(FederatedConnector):
     def _hit_to_inference_chunk(self, hit: dict[str, Any]) -> InferenceChunk | None:
         """Convert a single Microsoft Graph search hit to an InferenceChunk.
 
+        Handles both driveItem (files) and message (emails) result types.
+
         Args:
             hit: A single hit from the Microsoft Graph search response
 
@@ -418,6 +425,80 @@ class M365FederatedConnector(FederatedConnector):
         if not resource:
             return None
 
+        # Detect if this is an email or a file
+        odata_type: str = resource.get("@odata.type", "")
+        is_email = "message" in odata_type.lower()
+
+        if is_email:
+            return self._email_to_inference_chunk(hit, resource)
+        else:
+            return self._file_to_inference_chunk(hit, resource)
+
+    def _email_to_inference_chunk(
+        self, hit: dict[str, Any], resource: dict[str, Any]
+    ) -> InferenceChunk | None:
+        """Convert an email search hit to an InferenceChunk."""
+        resource_id: str = resource.get("id", "")
+        subject: str = resource.get("subject", "No Subject")
+        web_link: str = resource.get("webLink", "")
+        preview: str = resource.get("bodyPreview", "")
+        received: str | None = resource.get("receivedDateTime")
+
+        # Sender info
+        sender_data: dict[str, Any] = resource.get("sender", {}).get("emailAddress", {})
+        sender_name: str = sender_data.get("name", "")
+        sender_email: str = sender_data.get("address", "")
+        sender: str = f"{sender_name} <{sender_email}>" if sender_email else sender_name
+
+        # Build content
+        summary: str = hit.get("summary", preview)
+        content = f"From: {sender}\nSubject: {subject}\n\n{summary}"
+
+        # Metadata
+        metadata: dict[str, str | list[str]] = {
+            "type": "email",
+            "sender": sender,
+            "subject": subject,
+        }
+        if received:
+            metadata["received"] = received
+
+        # Parse date
+        updated_at: datetime | None = None
+        if received:
+            try:
+                updated_at = datetime.fromisoformat(received.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        rank: int = hit.get("rank", 0)
+
+        return InferenceChunk(
+            document_id=f"email_{resource_id}",
+            chunk_id=0,
+            blurb=f"Email: {subject}",
+            content=content,
+            source_links={0: web_link} if web_link else None,
+            image_file_id=None,
+            section_continuation=False,
+            source_type=DocumentSource.NOT_APPLICABLE,
+            semantic_identifier=f"Email: {subject} (from {sender})",
+            title=subject,
+            boost=0,
+            score=float(rank) if rank else 0.0,
+            hidden=False,
+            metadata=metadata,
+            match_highlights=[summary] if summary else [],
+            doc_summary=summary,
+            chunk_context="",
+            updated_at=updated_at,
+            is_federated=True,
+        )
+
+    def _file_to_inference_chunk(
+        self, hit: dict[str, Any], resource: dict[str, Any]
+    ) -> InferenceChunk | None:
+        """Convert a file/driveItem search hit to an InferenceChunk."""
         resource_id: str = resource.get("id", "")
         name: str = resource.get("name", "Unknown")
         web_url: str = resource.get("webUrl", "")
