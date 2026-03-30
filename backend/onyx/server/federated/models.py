@@ -8,7 +8,13 @@ from onyx.configs.constants import FederatedConnectorSource
 
 
 class FederatedConnectorCredentials(BaseModel):
-    """Credentials for federated connector"""
+    """Credentials for federated connector.
+
+    Uses model_config extra='allow' so that connector-specific fields
+    (e.g., tenant_id for M365) are passed through without being stripped.
+    """
+
+    model_config = {"extra": "allow"}
 
     client_id: str | None = None
     client_secret: str | None = None
