@@ -14,7 +14,7 @@ export default function LoginText() {
           "Naarni"}
       </Text>
       <Text as="p" text03 mainUiMuted>
-        Your open source AI platform for work
+        One System. Infinite Possibilities.
       </Text>
     </div>
   );

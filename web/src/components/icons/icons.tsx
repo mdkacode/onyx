@@ -585,7 +585,7 @@ export const OnyxIcon = ({
     <svg
       style={{ width: `${size}px`, height: `${size}px` }}
       className={`w-[${size}px] h-[${size}px] ` + className}
-      viewBox="0 0 100 100"
+      viewBox="5 0 90 80"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
@@ -639,8 +639,8 @@ export const OnyxLogoTypeIcon = ({
           <stop offset="100%" stopColor="#2ECC71" />
         </linearGradient>
       </defs>
-      {/* Hexagon icon — scaled down */}
-      <g transform="translate(5,10) scale(0.55)">
+      {/* Hexagon icon — scaled to fill height */}
+      <g transform="translate(0,5) scale(0.7)">
         <polygon
           points="50,5 68,15 68,35 50,45 32,35 32,15"
           fill="url(#naarniLogoGrad)"
@@ -655,15 +655,15 @@ export const OnyxLogoTypeIcon = ({
         />
         <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
       </g>
-      {/* NaArNi text */}
+      {/* NaArNi text — uses currentColor for dark mode support */}
       <text
-        x="80"
+        x="85"
         y="78"
         fontFamily="'Georgia', 'Times New Roman', serif"
         fontWeight="700"
         fontSize="56"
         letterSpacing="2"
-        fill="#1B2A4A"
+        fill="currentColor"
       >
         NaArNi
       </text>

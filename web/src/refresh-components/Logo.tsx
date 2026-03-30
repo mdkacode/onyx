@@ -5,6 +5,7 @@ import { useSettingsContext } from "@/providers/SettingsProvider";
 import {
   LOGO_FOLDED_SIZE_PX,
   LOGO_UNFOLDED_SIZE_PX,
+  NAARNI_GYAN_VERSION,
   NEXT_PUBLIC_DO_NOT_USE_TOGGLE_OFF_DANSWER_POWERED,
 } from "@/lib/constants";
 import { cn } from "@/lib/utils";
@@ -75,7 +76,7 @@ export default function Logo({ folded, size, className }: LogoProps) {
                 className={"line-clamp-1 truncate"}
                 nowrap
               >
-                Powered by Naarni
+                NaArNi Gyan v{NAARNI_GYAN_VERSION}
               </Text>
             )}
           </div>

@@ -127,8 +127,10 @@ export const DESKTOP_SMALL_BREAKPOINT_PX = 912;
 export const DESKTOP_MEDIUM_BREAKPOINT_PX = 1232;
 export const DEFAULT_AVATAR_SIZE_PX = 18;
 export const HORIZON_DISTANCE_PX = 800;
-export const LOGO_FOLDED_SIZE_PX = 24;
+export const LOGO_FOLDED_SIZE_PX = 28;
 export const LOGO_UNFOLDED_SIZE_PX = 88;
+
+export const NAARNI_GYAN_VERSION = "1.0.0";
 
 export const DEFAULT_CONTEXT_TOKENS = 120_000;
 export const MAX_CHUNKS_FED_TO_CHAT = 25;
