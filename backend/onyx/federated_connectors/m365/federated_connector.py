@@ -325,59 +325,80 @@ class M365FederatedConnector(FederatedConnector):
                 file_type_filter = " OR ".join(f"filetype:{ext}" for ext in extensions)
                 query_string = f"({query_string}) AND ({file_type_filter})"
 
-        # Build entity types based on search scope
-        entity_types = ["driveItem"]
+        # Microsoft Graph v1.0 /search/query does NOT support multiple entity
+        # types in a single request.  We must issue separate calls for files
+        # (driveItem) and emails (message), then merge the results.
 
-        # Build the search requests — files + emails in parallel
-        search_requests: list[dict[str, Any]] = [
-            {
-                "entityTypes": entity_types,
-                "query": {"queryString": query_string},
-                "from": 0,
-                "size": max_results,
-            },
-            {
-                "entityTypes": ["message"],
-                "query": {"queryString": query_string},
-                "from": 0,
-                "size": max_results,
-            },
-        ]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
 
-        search_request: dict[str, Any] = {"requests": search_requests}
+        all_chunks: list[InferenceChunk] = []
 
-        # Add scope-specific filters (only for file search, not email)
+        # --- 1) File search (driveItem) ---
+        file_query_string = query_string
         if config.search_scope == "sharepoint_only":
-            search_request["requests"][0]["query"][
-                "queryString"
-            ] = f'({query_string}) AND (path:"https://*/sites/*")'
+            file_query_string = f'({query_string}) AND (path:"https://*/sites/*")'
         elif config.search_scope == "onedrive_only":
-            search_request["requests"][0]["query"][
-                "queryString"
-            ] = f'({query_string}) AND (path:"https://*/personal/*")'
+            file_query_string = f'({query_string}) AND (path:"https://*/personal/*")'
+
+        file_request: dict[str, Any] = {
+            "requests": [
+                {
+                    "entityTypes": ["driveItem"],
+                    "query": {"queryString": file_query_string},
+                    "from": 0,
+                    "size": max_results,
+                }
+            ]
+        }
 
         try:
-            response = requests.post(
+            file_response = requests.post(
                 f"{MICROSOFT_GRAPH_BASE}/search/query",
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json=search_request,
+                headers=headers,
+                json=file_request,
             )
-            response.raise_for_status()
+            file_response.raise_for_status()
+            all_chunks.extend(self._parse_search_response(file_response.json()))
         except requests.exceptions.HTTPError as e:
             logger.error(
-                f"Microsoft Graph search API HTTP error: {e.response.status_code} "
+                f"Microsoft Graph file search HTTP error: {e.response.status_code} "
                 f"- {e.response.text}"
             )
-            return []
         except requests.exceptions.RequestException as e:
-            logger.error(f"Microsoft Graph search API request error: {e}")
-            return []
+            logger.error(f"Microsoft Graph file search request error: {e}")
 
-        response_data: dict[str, Any] = response.json()
-        return self._parse_search_response(response_data)
+        # --- 2) Email search (message) ---
+        email_request: dict[str, Any] = {
+            "requests": [
+                {
+                    "entityTypes": ["message"],
+                    "query": {"queryString": query_string},
+                    "from": 0,
+                    "size": max_results,
+                }
+            ]
+        }
+
+        try:
+            email_response = requests.post(
+                f"{MICROSOFT_GRAPH_BASE}/search/query",
+                headers=headers,
+                json=email_request,
+            )
+            email_response.raise_for_status()
+            all_chunks.extend(self._parse_search_response(email_response.json()))
+        except requests.exceptions.HTTPError as e:
+            logger.error(
+                f"Microsoft Graph email search HTTP error: {e.response.status_code} "
+                f"- {e.response.text}"
+            )
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Microsoft Graph email search request error: {e}")
+
+        return all_chunks
 
     def _parse_search_response(
         self, response_data: dict[str, Any]
