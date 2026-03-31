@@ -19,5 +19,5 @@ export const getBackendVersion = async (): Promise<string | null> => {
 
 // Frontend?
 export const getWebVersion = (): string | null => {
-  return process.env.ONYX_VERSION || "dev";
+  return process.env.ONYX_VERSION || "1.0.0";
 };

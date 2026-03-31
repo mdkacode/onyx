@@ -1,5 +1,8 @@
 from collections import defaultdict
 from collections.abc import Callable
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from typing import Any
 from uuid import UUID
 
@@ -15,7 +18,9 @@ from onyx.db.federated import (
     get_federated_connector_document_set_mappings_by_document_set_names,
 )
 from onyx.db.federated import list_federated_connector_oauth_tokens
+from onyx.db.federated import update_federated_connector_oauth_token
 from onyx.db.models import FederatedConnector__DocumentSet
+from onyx.db.models import FederatedConnectorOAuthToken
 from onyx.db.slack_bot import fetch_slack_bots
 from onyx.federated_connectors.factory import get_federated_connector
 from onyx.federated_connectors.interfaces import FederatedConnector
@@ -23,6 +28,79 @@ from onyx.onyxbot.slack.models import SlackContext
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+# Refresh tokens 5 minutes before they expire to avoid race conditions
+TOKEN_EXPIRY_BUFFER_SECONDS = 300
+
+
+def _get_valid_access_token(
+    oauth_token: FederatedConnectorOAuthToken,
+    connector: FederatedConnector,
+    db_session: Session,
+) -> str:
+    """Get a valid access token, refreshing if expired.
+
+    Returns the current access token if still valid, or refreshes it using
+    the refresh_token if expired/expiring soon.
+    """
+    access_token = oauth_token.token.get_value(apply_mask=False)
+
+    # Check if token is expired or about to expire
+    if oauth_token.expires_at is not None:
+        now = datetime.now(timezone.utc)
+        expires_at = oauth_token.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if now >= expires_at - timedelta(seconds=TOKEN_EXPIRY_BUFFER_SECONDS):
+            # Token is expired or about to expire — try to refresh
+            refresh_token_val = (
+                oauth_token.refresh_token.get_value(apply_mask=False)
+                if oauth_token.refresh_token
+                else None
+            )
+            if refresh_token_val and hasattr(connector, "_refresh_access_token"):
+                try:
+                    logger.info(
+                        f"Refreshing expired OAuth token for connector "
+                        f"{oauth_token.federated_connector_id}"
+                    )
+                    token_response = connector._refresh_access_token(refresh_token_val)
+                    new_access_token = token_response.get("access_token", "")
+                    new_refresh_token = token_response.get("refresh_token")
+                    new_expires_at = None
+                    if "expires_in" in token_response:
+                        new_expires_at = now + timedelta(
+                            seconds=token_response["expires_in"]
+                        )
+
+                    # Update token in DB
+                    update_federated_connector_oauth_token(
+                        db_session=db_session,
+                        federated_connector_id=oauth_token.federated_connector_id,
+                        user_id=oauth_token.user_id,
+                        token=new_access_token,
+                        expires_at=new_expires_at,
+                        refresh_token=new_refresh_token,
+                    )
+                    logger.info(
+                        f"Successfully refreshed OAuth token for connector "
+                        f"{oauth_token.federated_connector_id}"
+                    )
+                    return new_access_token
+                except Exception as e:
+                    logger.error(
+                        f"Failed to refresh OAuth token for connector "
+                        f"{oauth_token.federated_connector_id}: {e}"
+                    )
+                    # Fall through and try with the old token
+            else:
+                logger.warning(
+                    f"OAuth token for connector {oauth_token.federated_connector_id} "
+                    f"is expired but no refresh_token available"
+                )
+
+    return access_token
 
 
 class FederatedRetrievalInfo(BaseModel):
@@ -217,11 +295,6 @@ def get_federated_retrieval_functions(
     # At this point, user_id is guaranteed to be not None since we're in the else branch
     assert user_id is not None
 
-    # If no source types are specified, don't use any federated connectors
-    if source_types is None:
-        logger.debug("No source types specified, skipping all federated connectors")
-        return []
-
     federated_retrieval_infos: list[FederatedRetrievalInfo] = []
     federated_oauth_tokens = list_federated_connector_oauth_tokens(db_session, user_id)
     for oauth_token in federated_oauth_tokens:
@@ -235,7 +308,9 @@ def get_federated_retrieval_functions(
             )
             continue
 
-        if (
+        # If source_types is specified, only include matching federated connectors.
+        # If source_types is None (no filter), include all non-Slack federated connectors.
+        if source_types is not None and (
             oauth_token.federated_connector.source.to_non_federated_source()
             not in source_types
         ):
@@ -258,8 +333,8 @@ def get_federated_retrieval_functions(
             oauth_token.federated_connector.credentials.get_value(apply_mask=False),
         )
 
-        # Capture variables by value to avoid lambda closure issues
-        access_token = oauth_token.token.get_value(apply_mask=False)
+        # Get a valid access token, refreshing if expired
+        access_token = _get_valid_access_token(oauth_token, connector, db_session)
 
         def create_retrieval_function(
             conn: FederatedConnector,

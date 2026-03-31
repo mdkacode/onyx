@@ -438,6 +438,7 @@ def handle_oauth_callback_generic(
             user_id=UUID(oauth_session.user_id),
             token=oauth_result.access_token,
             expires_at=oauth_result.expires_at,
+            refresh_token=oauth_result.refresh_token,
         )
 
     return oauth_callback_result

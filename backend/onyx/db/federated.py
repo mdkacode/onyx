@@ -100,6 +100,7 @@ def update_federated_connector_oauth_token(
     user_id: UUID,
     token: str,
     expires_at: datetime | None = None,
+    refresh_token: str | None = None,
 ) -> FederatedConnectorOAuthToken:
     """Update or create OAuth token for a federated connector and user."""
     # First, try to find existing token for this user and connector
@@ -113,6 +114,8 @@ def update_federated_connector_oauth_token(
         # Update existing token
         existing_token.token = token  # type: ignore[assignment]
         existing_token.expires_at = expires_at
+        if refresh_token is not None:
+            existing_token.refresh_token = refresh_token  # type: ignore[assignment]
         db_session.commit()
         return existing_token
     else:
@@ -122,6 +125,7 @@ def update_federated_connector_oauth_token(
             user_id=user_id,
             token=token,
             expires_at=expires_at,
+            refresh_token=refresh_token,
         )
         db_session.add(oauth_token)
         db_session.commit()

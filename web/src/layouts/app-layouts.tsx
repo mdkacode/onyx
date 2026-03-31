@@ -465,9 +465,9 @@ function Footer() {
 
   const customFooterContent =
     settings?.enterpriseSettings?.custom_lower_disclaimer_content ||
-    `[Onyx ${
-      settings?.webVersion || "dev"
-    }](https://www.onyx.app/) - ${APP_SLOGAN}`;
+    `[NaArNi Gyan v${
+      settings?.webVersion || "1.0.0"
+    }](https://ai.naarni.com/) - ${APP_SLOGAN}`;
 
   return (
     <footer

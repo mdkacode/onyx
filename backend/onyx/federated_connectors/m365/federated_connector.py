@@ -134,20 +134,23 @@ class M365FederatedConnector(FederatedConnector):
         Returns the URL where users should be redirected to authorize the application.
         Note: State parameter will be added by the API layer.
         """
-        tenant_id = self.m365_credentials.tenant_id
+        tenant_id = self.m365_credentials.tenant_id.strip()
 
         params = {
-            "client_id": self.m365_credentials.client_id,
+            "client_id": self.m365_credentials.client_id.strip(),
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "scope": " ".join(SCOPES),
             "response_mode": "query",
         }
 
+        # Use tenant ID directly — strip any whitespace/newlines
         oauth_url = (
             f"{MICROSOFT_AUTH_BASE}/{tenant_id}/oauth2/v2.0/authorize?"
             f"{urlencode(params)}"
         )
+
+        logger.info(f"OAuth URL tenant: [{tenant_id}]")
 
         logger.info("Generated Microsoft OAuth authorization URL")
         return oauth_url

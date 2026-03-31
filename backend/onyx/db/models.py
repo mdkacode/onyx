@@ -1989,6 +1989,9 @@ class FederatedConnectorOAuthToken(Base):
     token: Mapped[SensitiveValue[str] | None] = mapped_column(
         EncryptedString(), nullable=False
     )
+    refresh_token: Mapped[SensitiveValue[str] | None] = mapped_column(
+        EncryptedString(), nullable=True
+    )
     expires_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime, nullable=True
     )
