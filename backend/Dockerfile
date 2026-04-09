@@ -50,6 +50,15 @@ RUN apt-get update && \
         # Install procps so kubernetes exec sessions can use ps aux for debugging
         procps \
         libjemalloc2 \
+        # WeasyPrint system dependencies for HTML-to-PDF conversion
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libpangoft2-1.0-0 \
+        libffi-dev \
+        libgdk-pixbuf-2.0-0 \
+        libcairo2 \
+        fontconfig \
+        fonts-liberation \
         && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean

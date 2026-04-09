@@ -87,12 +87,14 @@ from onyx.server.features.input_prompt.api import (
 )
 from onyx.server.features.mcp.api import admin_router as mcp_admin_router
 from onyx.server.features.mcp.api import router as mcp_router
+from onyx.server.features.naarni_auth.api import router as naarni_auth_router
 from onyx.server.features.notifications.api import router as notification_router
 from onyx.server.features.oauth_config.api import (
     admin_router as admin_oauth_config_router,
 )
 from onyx.server.features.oauth_config.api import router as oauth_config_router
 from onyx.server.features.password.api import router as password_router
+from onyx.server.features.pdf_report.api import router as pdf_report_router
 from onyx.server.features.persona.api import admin_agents_router
 from onyx.server.features.persona.api import admin_router as admin_persona_router
 from onyx.server.features.persona.api import agents_router
@@ -486,6 +488,8 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
     include_router_with_global_prefix_prepended(application, notification_router)
     include_router_with_global_prefix_prepended(application, tool_router)
     include_router_with_global_prefix_prepended(application, admin_tool_router)
+    include_router_with_global_prefix_prepended(application, pdf_report_router)
+    include_router_with_global_prefix_prepended(application, naarni_auth_router)
     include_router_with_global_prefix_prepended(application, oauth_config_router)
     include_router_with_global_prefix_prepended(application, admin_oauth_config_router)
     include_router_with_global_prefix_prepended(application, user_oauth_token_router)

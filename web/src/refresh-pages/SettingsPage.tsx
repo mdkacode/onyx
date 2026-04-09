@@ -12,6 +12,7 @@ import {
   SvgKey,
   SvgLock,
   SvgMinusCircle,
+  SvgPlug,
   SvgTrash,
   SvgUnplug,
 } from "@opal/icons";
@@ -37,6 +38,7 @@ import useFilter from "@/hooks/useFilter";
 import CreateButton from "@/refresh-components/buttons/CreateButton";
 import { Button } from "@opal/components";
 import useFederatedOAuthStatus from "@/hooks/useFederatedOAuthStatus";
+import useNaarniAccount from "@/hooks/useNaarniAccount";
 import useCCPairs from "@/hooks/useCCPairs";
 import { ValidSources } from "@/lib/types";
 import { ConnectorCredentialPairStatus } from "@/app/admin/connector/[ccPairId]/types";
@@ -1620,6 +1622,247 @@ function FederatedConnectorCard({
   );
 }
 
+// ── Naarni Fleet Account Connection ──────────────────────────────────────────
+
+type NaarniOtpStep = "idle" | "phone" | "otp" | "connecting";
+
+function NaarniAccountCard() {
+  const { isConnected, phoneNumber, refetch } = useNaarniAccount();
+  const [step, setStep] = useState<NaarniOtpStep>("idle");
+  const [phone, setPhone] = useState("");
+  const [otp, setOtp] = useState("");
+  const [error, setError] = useState("");
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+
+  const handleRequestOtp = useCallback(async () => {
+    if (!phone.trim()) {
+      setError("Please enter your phone number.");
+      return;
+    }
+    setError("");
+    setStep("connecting");
+    try {
+      const resp = await fetch("/api/naarni-auth/request-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_number: phone.trim() }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.detail || "Failed to send OTP");
+      }
+      toast.success("OTP sent! Check your SMS.");
+      setStep("otp");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send OTP");
+      setStep("phone");
+    }
+  }, [phone]);
+
+  const handleVerifyOtp = useCallback(async () => {
+    if (!otp.trim()) {
+      setError("Please enter the OTP.");
+      return;
+    }
+    setError("");
+    setStep("connecting");
+    try {
+      const resp = await fetch("/api/naarni-auth/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_number: phone.trim(), otp: otp.trim() }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.detail || "Invalid OTP");
+      }
+      toast.success("Naarni account connected!");
+      setStep("idle");
+      setPhone("");
+      setOtp("");
+      refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verification failed");
+      setStep("otp");
+    }
+  }, [phone, otp, refetch]);
+
+  const handleDisconnect = useCallback(async () => {
+    setIsDisconnecting(true);
+    try {
+      const resp = await fetch("/api/naarni-auth/disconnect", {
+        method: "POST",
+      });
+      if (resp.ok) {
+        toast.success("Naarni account disconnected.");
+        setShowDisconnectConfirm(false);
+        refetch();
+      } else {
+        throw new Error("Failed to disconnect");
+      }
+    } catch {
+      toast.error("Failed to disconnect Naarni account.");
+    } finally {
+      setIsDisconnecting(false);
+    }
+  }, [refetch]);
+
+  // Connected state
+  if (isConnected) {
+    return (
+      <>
+        {showDisconnectConfirm && (
+          <ConfirmationModalLayout
+            icon={SvgUnplug}
+            title="Disconnect Naarni"
+            onClose={() => setShowDisconnectConfirm(false)}
+            submit={
+              <Disabled disabled={isDisconnecting}>
+                <Button
+                  variant="danger"
+                  onClick={() => void handleDisconnect()}
+                >
+                  {isDisconnecting ? "Disconnecting..." : "Disconnect"}
+                </Button>
+              </Disabled>
+            }
+          >
+            <Section gap={0.5} alignItems="start">
+              <Text>
+                The assistant will no longer be able to access live fleet data
+                from your Naarni account.
+              </Text>
+              <Text>You can reconnect at any time.</Text>
+            </Section>
+          </ConfirmationModalLayout>
+        )}
+
+        <Card padding={0.5}>
+          <ContentAction
+            icon={SvgPlug}
+            title="Naarni Fleet"
+            description={`Connected as ${phoneNumber}`}
+            sizePreset="main-content"
+            variant="section"
+            paddingVariant="sm"
+            rightChildren={
+              <Disabled disabled={isDisconnecting}>
+                <Button
+                  icon={SvgUnplug}
+                  prominence="tertiary"
+                  size="sm"
+                  onClick={() => setShowDisconnectConfirm(true)}
+                />
+              </Disabled>
+            }
+          />
+        </Card>
+      </>
+    );
+  }
+
+  // Not connected — show connect flow
+  if (step === "idle") {
+    return (
+      <Card padding={0.5}>
+        <ContentAction
+          icon={SvgPlug}
+          title="Naarni Fleet"
+          description="Connect to chat with your fleet data"
+          sizePreset="main-content"
+          variant="section"
+          paddingVariant="sm"
+          rightChildren={
+            <Button
+              prominence="internal"
+              rightIcon={SvgArrowExchange}
+              onClick={() => setStep("phone")}
+            >
+              Connect
+            </Button>
+          }
+        />
+      </Card>
+    );
+  }
+
+  // Phone entry / OTP entry / connecting states
+  return (
+    <Card padding={1}>
+      <Section gap={0.75} alignItems="start">
+        <Content
+          icon={SvgPlug}
+          title="Connect Naarni Fleet"
+          description={
+            step === "phone"
+              ? "Enter your Naarni phone number to receive an OTP"
+              : step === "otp"
+                ? `Enter the OTP sent to ${phone}`
+                : "Connecting..."
+          }
+          sizePreset="main-content"
+          variant="section"
+        />
+
+        {error && <Text className="text-status-error-text-01">{error}</Text>}
+
+        {step === "phone" && (
+          <Section gap={0.5}>
+            <InputTypeIn
+              placeholder="Phone number (e.g. 9999955555)"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleRequestOtp();
+              }}
+            />
+            <Section flexDirection="row" gap={0.5}>
+              <Button prominence="secondary" onClick={() => setStep("idle")}>
+                Cancel
+              </Button>
+              <Button
+                prominence="primary"
+                onClick={() => void handleRequestOtp()}
+              >
+                Send OTP
+              </Button>
+            </Section>
+          </Section>
+        )}
+
+        {step === "otp" && (
+          <Section gap={0.5}>
+            <InputTypeIn
+              placeholder="Enter OTP"
+              value={otp}
+              onChange={(e) => setOtp(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleVerifyOtp();
+              }}
+            />
+            <Section flexDirection="row" gap={0.5}>
+              <Button prominence="secondary" onClick={() => setStep("phone")}>
+                Back
+              </Button>
+              <Button
+                prominence="primary"
+                onClick={() => void handleVerifyOtp()}
+              >
+                Verify
+              </Button>
+            </Section>
+          </Section>
+        )}
+
+        {step === "connecting" && <Text text03>Connecting to Naarni...</Text>}
+      </Section>
+    </Card>
+  );
+}
+
+// ── Connectors Settings ─────────────────────────────────────────────────────
+
 function ConnectorsSettings() {
   const {
     connectors: federatedConnectors,
@@ -1661,6 +1904,18 @@ function ConnectorsSettings() {
 
   return (
     <Section gap={2}>
+      {/* Naarni Fleet Integration */}
+      <Section gap={0.75} justifyContent="start">
+        <Content
+          title="Fleet Integration"
+          sizePreset="main-content"
+          variant="section"
+          widthVariant="full"
+        />
+        <NaarniAccountCard />
+      </Section>
+
+      {/* Other Connectors */}
       <Section gap={0.75} justifyContent="start">
         <Content
           title="Connectors"

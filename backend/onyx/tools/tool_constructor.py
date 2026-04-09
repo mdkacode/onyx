@@ -37,6 +37,9 @@ from onyx.tools.tool_implementations.images.image_generation_tool import (
 )
 from onyx.tools.tool_implementations.mcp.mcp_tool import MCPTool
 from onyx.tools.tool_implementations.memory.memory_tool import MemoryTool
+from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
+    NaarniFleetTool,
+)
 from onyx.tools.tool_implementations.open_url.open_url_tool import (
     OpenURLTool,
 )
@@ -274,6 +277,16 @@ def construct_tools(
                     PptxGeneratorTool(
                         tool_id=db_tool_model.id,
                         emitter=emitter,
+                    )
+                ]
+
+            # Handle Naarni Fleet Data Tool
+            elif tool_cls.__name__ == NaarniFleetTool.__name__:
+                tool_dict[db_tool_model.id] = [
+                    NaarniFleetTool(
+                        tool_id=db_tool_model.id,
+                        emitter=emitter,
+                        user=user,
                     )
                 ]
 

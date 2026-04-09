@@ -1,0 +1,131 @@
+# ============================================================================
+# NaArNi — Scheduled VM Resize (Cost Optimization)
+# ============================================================================
+# Resizes the Azure VM on a daily schedule:
+#   - 9:55 AM IST (4:25 UTC) → E4s_v5 (4 vCPU, 32 GB) for business hours
+#   - 7:05 PM IST (13:35 UTC) → E2s_v5 (2 vCPU, 16 GB) for off-hours
+#
+# Monthly cost: ~$152/mo (down from $380/mo)
+# Downtime: ~3 min per resize (before/after work hours)
+#
+# Required GitHub Secrets:
+#   AZURE_CREDENTIALS — JSON output from: az ad sp create-for-rbac
+#                       (needs VM Contributor on the VM resource)
+#
+# If you can't create a service principal (Contributor-only role),
+# use the manual alternative: run from your Mac via crontab.
+# See bottom of file for instructions.
+# ============================================================================
+
+name: NaArNi VM - Scheduled Resize
+
+on:
+  schedule:
+    # 9:55 AM IST = 4:25 AM UTC (scale UP for business hours)
+    - cron: '25 4 * * *'
+    # 7:05 PM IST = 1:35 PM UTC (scale DOWN for off-hours)
+    - cron: '35 13 * * *'
+  workflow_dispatch:
+    inputs:
+      target_size:
+        description: 'VM size to resize to'
+        required: true
+        default: 'Standard_E4s_v5'
+        type: choice
+        options:
+          - Standard_E4s_v5
+          - Standard_E2s_v5
+          - Standard_E8s_v5
+
+permissions:
+  contents: read
+
+env:
+  RESOURCE_GROUP: naarni-cad-vm_group
+  VM_NAME: naarni-ai-vm
+
+jobs:
+  resize:
+    name: Resize VM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Determine target size
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "size=${{ inputs.target_size }}" >> $GITHUB_OUTPUT
+            echo "Manual resize to ${{ inputs.target_size }}"
+          elif [ "${{ github.event.schedule }}" = "25 4 * * *" ]; then
+            echo "size=Standard_E4s_v5" >> $GITHUB_OUTPUT
+            echo "Morning scale-up to E4s_v5 (4 vCPU, 32 GB)"
+          else
+            echo "size=Standard_E2s_v5" >> $GITHUB_OUTPUT
+            echo "Evening scale-down to E2s_v5 (2 vCPU, 16 GB)"
+          fi
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Check current VM size
+        id: current
+        run: |
+          CURRENT=$(az vm show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
+            --query 'hardwareProfile.vmSize' -o tsv)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current size: $CURRENT"
+          echo "Target size:  ${{ steps.target.outputs.size }}"
+
+      - name: Skip if already correct size
+        if: steps.current.outputs.current == steps.target.outputs.size
+        run: echo "Already at target size. Skipping resize."
+
+      - name: Deallocate VM
+        if: steps.current.outputs.current != steps.target.outputs.size
+        run: |
+          echo "Deallocating VM..."
+          az vm deallocate -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }}
+          echo "VM deallocated."
+
+      - name: Resize VM
+        if: steps.current.outputs.current != steps.target.outputs.size
+        run: |
+          echo "Resizing to ${{ steps.target.outputs.size }}..."
+          az vm resize -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
+            --size ${{ steps.target.outputs.size }}
+          echo "Resize complete."
+
+      - name: Start VM
+        if: steps.current.outputs.current != steps.target.outputs.size
+        run: |
+          echo "Starting VM..."
+          az vm start -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }}
+          echo "VM started."
+
+      - name: Wait for containers
+        if: steps.current.outputs.current != steps.target.outputs.size
+        run: |
+          echo "Waiting 90s for Docker containers to start..."
+          sleep 90
+
+      - name: Verify health
+        run: |
+          for i in $(seq 1 15); do
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
+              "https://ai.naarni.com/api/health" || echo "000")
+            echo "  Health check $i/15: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo ""
+              echo "NaArNi Gyan is healthy!"
+              FINAL_SIZE=$(az vm show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
+                --query 'hardwareProfile.vmSize' -o tsv)
+              echo "VM Size: $FINAL_SIZE"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "WARNING: Site not healthy after resize"
+          exit 1

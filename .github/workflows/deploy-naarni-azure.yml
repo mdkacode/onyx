@@ -148,7 +148,14 @@ jobs:
             # Infrastructure (DB, Redis, Vespa) stays untouched — no restart, no recreate
             echo "=== Restarting app containers only (DB/Redis/Vespa untouched) ==="
 
-            # Step 1: API server (runs migrations automatically on start)
+            # Step 1a: Run Alembic migrations before starting the new API server
+            echo "=== Running database migrations ==="
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml run --rm --no-deps \
+              -e PYTHONPATH=/app \
+              api_server alembic upgrade head 2>&1 | tail -10
+            echo "Migrations complete."
+
+            # Step 1b: Start API server
             docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d --no-deps --force-recreate api_server 2>&1 | tail -3
 
             # Wait for API to be healthy
