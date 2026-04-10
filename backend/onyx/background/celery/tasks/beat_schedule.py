@@ -154,6 +154,18 @@ beat_task_templates: list[dict] = [
             "queue": OnyxCeleryQueues.SANDBOX,
         },
     },
+    # Naarni fleet integration: proactively refresh user access tokens
+    # before they expire so the Fleet Data chat tool doesn't need to do
+    # an inline refresh on the first query after a ~6h idle period.
+    {
+        "name": "check-for-naarni-token-refresh",
+        "task": OnyxCeleryTask.CHECK_FOR_NAARNI_TOKEN_REFRESH,
+        "schedule": timedelta(minutes=15),
+        "options": {
+            "priority": OnyxCeleryPriority.LOW,
+            "expires": BEAT_EXPIRES_DEFAULT,
+        },
+    },
 ]
 
 if ENTERPRISE_EDITION_ENABLED:

@@ -11,8 +11,6 @@ automatically on first OTP request — no pre-configuration needed.
 """
 
 import os
-from uuid import UUID
-from uuid import uuid5
 
 import requests
 from fastapi import APIRouter
@@ -28,6 +26,14 @@ from onyx.db.naarni_auth import get_naarni_token_for_user
 from onyx.db.naarni_auth import upsert_naarni_token
 from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
+from onyx.server.features.naarni_auth.token_refresh import naarni_device_uuid
+from onyx.server.features.naarni_auth.token_refresh import (
+    NaarniRefreshFailed,
+)
+from onyx.server.features.naarni_auth.token_refresh import normalize_phone_number
+from onyx.server.features.naarni_auth.token_refresh import (
+    refresh_user_naarni_token,
+)
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -36,13 +42,9 @@ router = APIRouter(prefix="/naarni-auth")
 
 NAARNI_API_BASE_URL = os.environ.get("NAARNI_API_BASE_URL", "")
 
-# Fixed namespace for deterministic device UUID generation.
-# uuid5(namespace, NAARNI_API_BASE_URL) always produces the same UUID for a
-# given deployment, so the device is stable across process restarts.
-_DEVICE_UUID_NAMESPACE = UUID("7e2c3a19-4f8b-4d6e-a1c9-3b5f8e7d2a01")
-
 # In-memory cache — avoids re-registering on every OTP request within the
-# same process lifetime.
+# same process lifetime. Device UUID is deterministic via naarni_device_uuid()
+# so we only need to cache the numeric device_id returned by Naarni.
 _registered_device: dict[str, str | int] = {}
 
 
@@ -64,7 +66,7 @@ def _ensure_device_registered() -> tuple[str, int]:
         return str(_registered_device["uuid"]), int(_registered_device["id"])
 
     # Deterministic: same base URL always produces the same device UUID
-    device_uuid = str(uuid5(_DEVICE_UUID_NAMESPACE, NAARNI_API_BASE_URL))
+    device_uuid = naarni_device_uuid()
 
     try:
         resp = requests.post(
@@ -167,6 +169,11 @@ def request_otp(
     """
     _require_naarni_config()
 
+    try:
+        phone = normalize_phone_number(request.phone_number)
+    except ValueError as e:
+        raise OnyxError(OnyxErrorCode.INVALID_INPUT, str(e))
+
     device_uuid, device_id = _ensure_device_registered()
 
     try:
@@ -178,7 +185,7 @@ def request_otp(
                 "x-platform": "WEB",
             },
             json={
-                "contact": request.phone_number,
+                "contact": phone,
                 "contactType": "PHONE",
                 "deviceId": device_id,
             },
@@ -206,7 +213,7 @@ def request_otp(
 
     return RequestOtpResponse(
         success=True,
-        message=f"OTP sent to {request.phone_number}. Please check your SMS.",
+        message=f"OTP sent to {phone}. Please check your SMS.",
     )
 
 
@@ -222,6 +229,15 @@ def verify_otp(
     """
     _require_naarni_config()
 
+    try:
+        phone = normalize_phone_number(request.phone_number)
+    except ValueError as e:
+        raise OnyxError(OnyxErrorCode.INVALID_INPUT, str(e))
+
+    otp = request.otp.strip()
+    if not otp:
+        raise OnyxError(OnyxErrorCode.INVALID_INPUT, "OTP is required.")
+
     device_uuid, device_id = _ensure_device_registered()
 
     try:
@@ -234,8 +250,8 @@ def verify_otp(
             data={
                 "device_id": str(device_id),
                 "grant_type": "phone",
-                "otp": request.otp,
-                "phone": request.phone_number,
+                "otp": otp,
+                "phone": phone,
             },
             timeout=10,
         )
@@ -279,19 +295,45 @@ def verify_otp(
     upsert_naarni_token(
         db_session=db_session,
         user_id=user.id,
-        phone_number=request.phone_number,
+        phone_number=phone,
         naarni_device_id=device_id,
         access_token=access_token,
         refresh_token=refresh_token,
     )
 
-    logger.info(
-        f"Naarni account linked for user {user.id} (phone: {request.phone_number})"
-    )
+    logger.info(f"Naarni account linked for user {user.id} (phone: {phone})")
 
     return VerifyOtpResponse(
         success=True,
         message="Naarni account linked successfully. You can now ask about fleet data in chat.",
+    )
+
+
+@router.post("/refresh")
+def refresh_naarni_token(
+    user: User = Depends(current_user),
+    db_session: Session = Depends(get_session),
+) -> VerifyOtpResponse:
+    """Manually refresh the current user's Naarni access token.
+
+    Normally refresh happens automatically via the background Celery task
+    and inline 401-retry in NaarniFleetTool, so this route is primarily a
+    debugging / manual-recovery knob.
+    """
+    _require_naarni_config()
+
+    try:
+        refresh_user_naarni_token(db_session=db_session, user_id=user.id)
+    except NaarniRefreshFailed as e:
+        logger.warning("Manual Naarni refresh failed for user %s: %s", user.id, e)
+        raise OnyxError(
+            OnyxErrorCode.UNAUTHENTICATED,
+            "Could not refresh Naarni token. Please reconnect your account.",
+        )
+
+    return VerifyOtpResponse(
+        success=True,
+        message="Naarni access token refreshed.",
     )
 
 

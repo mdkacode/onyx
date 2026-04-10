@@ -60,6 +60,12 @@ export default function Layout({ children }: LayoutProps) {
               >
                 Connectors
               </SidebarTab>
+              <SidebarTab
+                href="/app/settings/naarni-connect"
+                selected={pathname === "/app/settings/naarni-connect"}
+              >
+                Naarni Fleet
+              </SidebarTab>
             </div>
 
             {/* Right: Tab Content */}

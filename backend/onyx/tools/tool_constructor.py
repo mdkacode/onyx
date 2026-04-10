@@ -43,6 +43,9 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
 from onyx.tools.tool_implementations.open_url.open_url_tool import (
     OpenURLTool,
 )
+from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+    PdfGenerationTool,
+)
 from onyx.tools.tool_implementations.pptx_generator.pptx_generator_tool import (
     PptxGeneratorTool,
 )
@@ -275,6 +278,15 @@ def construct_tools(
             elif tool_cls.__name__ == PptxGeneratorTool.__name__:
                 tool_dict[db_tool_model.id] = [
                     PptxGeneratorTool(
+                        tool_id=db_tool_model.id,
+                        emitter=emitter,
+                    )
+                ]
+
+            # Handle PDF Generation Tool
+            elif tool_cls.__name__ == PdfGenerationTool.__name__:
+                tool_dict[db_tool_model.id] = [
+                    PdfGenerationTool(
                         tool_id=db_tool_model.id,
                         emitter=emitter,
                     )

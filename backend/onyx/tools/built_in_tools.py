@@ -13,6 +13,9 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
     NaarniFleetTool,
 )
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
+from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+    PdfGenerationTool,
+)
 from onyx.tools.tool_implementations.pptx_generator.pptx_generator_tool import (
     PptxGeneratorTool,
 )
@@ -36,6 +39,7 @@ BUILT_IN_TOOL_TYPES = Union[
     FileReaderTool,
     MemoryTool,
     PptxGeneratorTool,
+    PdfGenerationTool,
     NaarniFleetTool,
 ]
 
@@ -49,6 +53,7 @@ BUILT_IN_TOOL_MAP: dict[str, Type[BUILT_IN_TOOL_TYPES]] = {
     FileReaderTool.__name__: FileReaderTool,
     MemoryTool.__name__: MemoryTool,
     PptxGeneratorTool.__name__: PptxGeneratorTool,
+    PdfGenerationTool.__name__: PdfGenerationTool,
     NaarniFleetTool.__name__: NaarniFleetTool,
 }
 

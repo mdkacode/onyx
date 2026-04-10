@@ -52,6 +52,10 @@ class StreamingType(Enum):
     PPTX_GENERATION_HEARTBEAT = "pptx_generation_heartbeat"
     PPTX_GENERATION_FINAL = "pptx_generation_final"
 
+    PDF_GENERATION_START = "pdf_generation_start"
+    PDF_GENERATION_HEARTBEAT = "pdf_generation_heartbeat"
+    PDF_GENERATION_FINAL = "pdf_generation_final"
+
     DEEP_RESEARCH_PLAN_START = "deep_research_plan_start"
     DEEP_RESEARCH_PLAN_DELTA = "deep_research_plan_delta"
     RESEARCH_AGENT_START = "research_agent_start"
@@ -356,6 +360,33 @@ class PptxGenerationFinal(BaseObj):
 
 
 ################################################
+# PDF Generation Packets
+################################################
+class PdfGenerationToolStart(BaseObj):
+    type: Literal["pdf_generation_start"] = StreamingType.PDF_GENERATION_START.value
+
+
+class PdfGenerationToolHeartbeat(BaseObj):
+    type: Literal["pdf_generation_heartbeat"] = (
+        StreamingType.PDF_GENERATION_HEARTBEAT.value
+    )
+
+
+class GeneratedPdf(BaseModel):
+    file_id: str
+    url: str
+    title: str
+    page_count: int
+    size_bytes: int
+
+
+class PdfGenerationFinal(BaseObj):
+    type: Literal["pdf_generation_final"] = StreamingType.PDF_GENERATION_FINAL.value
+
+    pdf: GeneratedPdf
+
+
+################################################
 # Deep Research Packets
 ################################################
 class DeepResearchPlanStart(BaseObj):
@@ -434,6 +465,10 @@ PacketObj = Union[
     PptxGenerationToolStart,
     PptxGenerationToolHeartbeat,
     PptxGenerationFinal,
+    # PDF Generation Packets
+    PdfGenerationToolStart,
+    PdfGenerationToolHeartbeat,
+    PdfGenerationFinal,
     # Reasoning Packets
     ReasoningStart,
     ReasoningDelta,

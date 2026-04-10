@@ -494,6 +494,9 @@ class OnyxRedisLocks:
     # Sandbox file sync
     SANDBOX_FILE_SYNC_LOCK_PREFIX = "da_lock:sandbox_file_sync"
 
+    # Naarni fleet integration
+    CHECK_NAARNI_TOKEN_REFRESH_BEAT_LOCK = "da_lock:check_naarni_token_refresh_beat"
+
 
 class OnyxRedisSignals:
     BLOCK_VALIDATE_INDEXING_FENCES = "signal:block_validate_indexing_fences"
@@ -551,6 +554,7 @@ class OnyxCeleryTask:
 
     CHECK_FOR_CONNECTOR_DELETION = "check_for_connector_deletion_task"
     CHECK_FOR_VESPA_SYNC_TASK = "check_for_vespa_sync_task"
+    CHECK_FOR_NAARNI_TOKEN_REFRESH = "check_for_naarni_token_refresh"
     CHECK_FOR_INDEXING = "check_for_indexing"
     CHECK_FOR_PRUNING = "check_for_pruning"
     CHECK_FOR_HIERARCHY_FETCHING = "check_for_hierarchy_fetching"

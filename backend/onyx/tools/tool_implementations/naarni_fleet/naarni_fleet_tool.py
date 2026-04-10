@@ -27,6 +27,10 @@ from onyx.chat.emitter import Emitter
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.models import User
 from onyx.db.naarni_auth import get_naarni_token_for_user
+from onyx.server.features.naarni_auth.token_refresh import NaarniRefreshFailed
+from onyx.server.features.naarni_auth.token_refresh import (
+    refresh_user_naarni_token,
+)
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import CustomToolDelta
 from onyx.server.query_and_chat.streaming_models import CustomToolStart
@@ -113,6 +117,26 @@ class NaarniFleetTool(Tool[None]):
             self._access_token = str(raw_token)
 
         return self._access_token
+
+    def _force_refresh_token(self) -> str | None:
+        """Attempt a server-side refresh of the user's Naarni token.
+
+        Returns the new access token on success, or None if refresh failed
+        (in which case the caller should surface the original 401 and tell
+        the user to reconnect).
+        """
+        try:
+            with get_session_with_current_tenant() as db_session:
+                new_token = refresh_user_naarni_token(
+                    db_session=db_session, user_id=self._user.id
+                )
+        except NaarniRefreshFailed as e:
+            logger.warning(
+                "Naarni auto-refresh failed for user %s: %s", self._user.id, e
+            )
+            return None
+        self._access_token = new_token
+        return new_token
 
     @property
     def id(self) -> int:
@@ -210,26 +234,134 @@ class NaarniFleetTool(Tool[None]):
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "x-platform": "WEB",
         }
 
-    def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    @staticmethod
+    def _unwrap_envelope(data: Any) -> Any:
+        """Unwrap Naarni's standard response envelope if present.
+
+        The Naarni backend is inconsistent: CRUD endpoints (dashboard,
+        vehicles, fleets, routes, users, organizations) wrap their payload
+        in a standard envelope:
+
+            {"body": {...actual data...}, "statusCode": 200,
+             "success": true, "errorMessage": null, "code": null}
+
+        Analytics endpoints (/analytics/performance,
+        /analytics/vehicle-activity, /analytics/vehicle-analytics) and the
+        alerts endpoints (/alerts, /alert-definitions) return data
+        BARE — no envelope at all. The Naarni web app at naarni.com
+        handles this per-endpoint in dataSourceService.ts; ONYX needs
+        the same treatment so the LLM doesn't waste tokens parsing a
+        redundant envelope on every CRUD response.
+
+        Detection is strict: we only unwrap when all three canonical
+        fields (`body`, `statusCode`, `success`) are present together,
+        so bare responses — including Spring Pageable shapes that
+        happen to have a `content` field — pass through untouched.
+
+        If the envelope has `success: false`, we surface the server's
+        `errorMessage` as a ToolCallException. Upstream 4xx/5xx statuses
+        are already handled by `resp.raise_for_status()` before this
+        point, but `success: false` can come back with a 200 status
+        code from some Spring handlers.
+        """
+        if not isinstance(data, dict):
+            return data
+        has_envelope = "body" in data and "statusCode" in data and "success" in data
+        if not has_envelope:
+            return data
+        if not data.get("success", False):
+            error_msg = (
+                data.get("errorMessage")
+                or data.get("error_message")
+                or "Naarni API returned success=false"
+            )
+            raise ToolCallException(
+                message=f"Naarni success=false: {error_msg}",
+                llm_facing_message=(
+                    f"The fleet data service rejected the request: {error_msg}"
+                ),
+            )
+        return data.get("body")
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        """Send a request to Naarni, retrying once on 401 after a token refresh.
+
+        The Naarni access token is ~6 hours, and a user may come back to
+        ONYX hours after linking. Instead of immediately 401-ing them with
+        "please reconnect", we make one best-effort refresh attempt using
+        the stored refresh token. If that also fails, we fall through to
+        the original HTTPError handler in `run()` which surfaces a nice
+        reconnect message.
+
+        Responses are passed through `_unwrap_envelope` so CRUD endpoints
+        that wrap their payload in `{body, statusCode, success, ...}`
+        are flattened before reaching the LLM.
+        """
         url = f"{NAARNI_API_BASE_URL}{path}"
-        resp = requests.get(url, headers=self._headers(), params=params, timeout=15)
+        resp = requests.request(
+            method,
+            url,
+            headers=self._headers(),
+            params=params,
+            json=json_body,
+            timeout=15,
+        )
+
+        if resp.status_code == 401:
+            new_token = self._force_refresh_token()
+            if new_token is not None:
+                resp = requests.request(
+                    method,
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                    json=json_body,
+                    timeout=15,
+                )
+
         resp.raise_for_status()
-        return resp.json()
+        return self._unwrap_envelope(resp.json())
+
+    def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """Simple GET with optional query params (e.g. /fleets?page=0&limit=20)."""
+        return self._request("GET", path, params=params)
+
+    def _api_get_with_body(self, path: str, body: dict[str, Any]) -> Any:
+        """GET with JSON body — used by /vehicles/filter (Spring disableBodyPruning)."""
+        return self._request("GET", path, json_body=body)
 
     def _api_post(self, path: str, body: dict[str, Any]) -> Any:
-        url = f"{NAARNI_API_BASE_URL}{path}"
-        resp = requests.post(url, headers=self._headers(), json=body, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
+        """POST with JSON body (analytics endpoints)."""
+        return self._request("POST", path, json_body=body)
+
+    @staticmethod
+    def _default_time_range() -> dict[str, str]:
+        """Today's date range as default for analytics queries."""
+        from datetime import datetime
+        from datetime import timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return {"start": f"{today}T00:00:00", "end": f"{today}T23:59:59"}
 
     # ── Action handlers ───────────────────────────────────────────────────────
+    # Matches Postman collection: Naarni Backend
 
     def _get_dashboard(self, params: dict[str, Any]) -> Any:  # noqa: ARG002
+        """GET /api/v1/dashboard — requires org + role."""
         return self._api_get("/api/v1/dashboard")
 
     def _list_vehicles(self, params: dict[str, Any]) -> Any:
+        """GET /api/v1/vehicles/fleet/{id} or filter."""
         fleet_id = params.get("fleet_id")
         if fleet_id:
             return self._api_get(
@@ -239,6 +371,7 @@ class NaarniFleetTool(Tool[None]):
         return self._filter_vehicles(params)
 
     def _get_vehicle_details(self, params: dict[str, Any]) -> Any:
+        """GET /api/v1/vehicles/{id}"""
         vehicle_id = params.get("vehicle_id")
         if not vehicle_id:
             raise ToolCallException(
@@ -248,6 +381,7 @@ class NaarniFleetTool(Tool[None]):
         return self._api_get(f"/api/v1/vehicles/{vehicle_id}")
 
     def _filter_vehicles(self, params: dict[str, Any]) -> Any:
+        """GET /api/v1/vehicles/filter — GET with JSON body (Postman: disableBodyPruning)."""
         body: dict[str, Any] = {
             "filterContext": {},
             "page": {"page": params.get("page", 0), "size": params.get("size", 50)},
@@ -270,22 +404,26 @@ class NaarniFleetTool(Tool[None]):
             ]
         if "has_active_device" in params:
             body["filterContext"]["hasActiveDevice"] = params["has_active_device"]
-        return self._api_get("/api/v1/vehicles/filter", body)
+        return self._api_get_with_body("/api/v1/vehicles/filter", body)
 
     def _list_fleets(self, params: dict[str, Any]) -> Any:
+        """GET /api/v1/fleets?page=0&limit=20"""
         return self._api_get(
             "/api/v1/fleets",
             {"page": params.get("page", 0), "limit": params.get("size", 20)},
         )
 
     def _list_routes(self, params: dict[str, Any]) -> Any:  # noqa: ARG002
+        """GET /api/v1/routes"""
         return self._api_get("/api/v1/routes")
 
     def _get_performance(self, params: dict[str, Any]) -> Any:
+        """POST /api/v1/analytics/performance"""
+        default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
-                "start": params.get("start_date", "2025-10-01T00:00:00"),
-                "end": params.get("end_date", "2025-10-31T00:00:00"),
+                "start": params.get("start_date", default_range["start"]),
+                "end": params.get("end_date", default_range["end"]),
             },
         }
         if "group_by" in params:
@@ -303,10 +441,12 @@ class NaarniFleetTool(Tool[None]):
         return self._api_post("/api/v1/analytics/performance", body)
 
     def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
+        """POST /api/v1/analytics/vehicle-activity"""
+        default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
-                "start": params.get("start_date", "2025-10-01T00:00:00"),
-                "end": params.get("end_date", "2025-10-31T00:00:00"),
+                "start": params.get("start_date", default_range["start"]),
+                "end": params.get("end_date", default_range["end"]),
             },
         }
         if "group_by" in params:
@@ -326,10 +466,12 @@ class NaarniFleetTool(Tool[None]):
         return self._api_post("/api/v1/analytics/vehicle-activity", body)
 
     def _get_vehicle_analytics(self, params: dict[str, Any]) -> Any:
+        """POST /api/v1/analytics/vehicle-analytics"""
+        default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
-                "start": params.get("start_date", "2025-10-01T00:00:00"),
-                "end": params.get("end_date", "2025-10-31T00:00:00"),
+                "start": params.get("start_date", default_range["start"]),
+                "end": params.get("end_date", default_range["end"]),
             },
         }
         if "vehicle_ids" in params:
@@ -426,6 +568,16 @@ class NaarniFleetTool(Tool[None]):
                     llm_facing_message=(
                         "Your Naarni session has expired. "
                         "Please re-link your account in Settings."
+                    ),
+                )
+            if status == 403:
+                raise ToolCallException(
+                    message=f"Naarni API 403 for {action}, user {self._user.id}",
+                    llm_facing_message=(
+                        f"Your Naarni account does not have permission for '{action}'. "
+                        "Try a different query — for example, listing fleets, routes, "
+                        "or vehicles may work. The dashboard and analytics endpoints "
+                        "require your Naarni account to be assigned to an organization."
                     ),
                 )
             raise ToolCallException(
