@@ -1,5 +1,6 @@
 import datetime
 import json
+import urllib.parse
 from collections.abc import Generator
 from datetime import timedelta
 from uuid import UUID
@@ -33,6 +34,7 @@ from onyx.chat.prompt_utils import get_default_base_system_prompt
 from onyx.chat.stop_signal_checker import set_fence
 from onyx.configs.app_configs import WEB_DOMAIN
 from onyx.configs.chat_configs import HARD_DELETE_CHATS
+from onyx.configs.constants import FileOrigin
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import MilestoneRecordType
 from onyx.configs.constants import PUBLIC_API_TAGS
@@ -816,11 +818,33 @@ def fetch_chat_file(
     # Files served here are immutable (content-addressed by file_id), so allow long-lived caching.
     # Use `private` because this is behind auth / tenant scoping.
     etag = f'"{file_id}"'
-    cache_headers = {
+    cache_headers: dict[str, str] = {
         "Cache-Control": "private, max-age=31536000, immutable",
         "ETag": etag,
         "Vary": "Cookie",
     }
+
+    # Generated tool outputs (PDFs from PdfGenerationTool, etc.) should
+    # download-as-attachment instead of opening inline. Without this
+    # header, browsers try to render the PDF in-place, which fails when
+    # the link is followed from the chat anchor tag because the
+    # navigation happens in a same-origin <a> and the chat app's router
+    # never has a matching page route.
+    #
+    # We ONLY set attachment for files with origin=GENERATED_REPORT so
+    # that in-chat images (CHAT_IMAGE_GEN) and uploaded user files
+    # continue to render inline as they did before.
+    if (
+        file_record.file_origin == FileOrigin.GENERATED_REPORT
+        and file_record.display_name
+    ):
+        # RFC 5987 encoding for non-ASCII filenames.
+        raw_name = file_record.display_name
+        safe_name = raw_name.encode("ascii", "ignore").decode("ascii") or "download"
+        encoded_name = urllib.parse.quote(raw_name, safe="")
+        cache_headers["Content-Disposition"] = (
+            f'attachment; filename="{safe_name}"; ' f"filename*=UTF-8''{encoded_name}"
+        )
 
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=cache_headers)

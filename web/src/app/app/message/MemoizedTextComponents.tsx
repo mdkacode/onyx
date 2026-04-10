@@ -102,6 +102,8 @@ export const MemoizedAnchor = memo(
               document={associatedDocInfo}
               question={associatedSubQuestion}
               openQuestion={openQuestion}
+              docs={docs}
+              userFiles={userFiles}
             >
               {children}
             </MemoizedLink>
@@ -113,6 +115,8 @@ export const MemoizedAnchor = memo(
       <MemoizedLink
         updatePresentingDocument={updatePresentingDocument}
         href={href}
+        docs={docs}
+        userFiles={userFiles}
       >
         {children}
       </MemoizedLink>
@@ -128,9 +132,13 @@ export const MemoizedLink = memo(
     question,
     href,
     openQuestion,
+    docs,
+    userFiles,
     ...rest
   }: Partial<DocumentCardProps & QuestionCardProps> & {
     node?: any;
+    docs?: OnyxDocument[] | null;
+    userFiles?: ProjectFile[] | null;
     [key: string]: any;
   }) => {
     const value = rest.children;
@@ -182,21 +190,56 @@ export const MemoizedLink = memo(
 
     const url = ensureHrefProtocol(href);
 
-    // Check if the link is to a file on the backend
+    // Check if the link is to a file on the backend.
+    //
+    // NOTE: this interception used to fire for ANY "/api/chat/file/" URL,
+    // which broke generated-file downloads (PDFs from PdfGenerationTool,
+    // PPTXs from PptxGeneratorTool, etc.). Those files are NOT indexed as
+    // OnyxDocuments and have no entry in the `docs` / `userFiles` arrays,
+    // so calling `updatePresentingDocument` for them opened an empty
+    // preview panel and the user had no way to actually download the
+    // file.
+    //
+    // Fix: only intercept when the file_id corresponds to a known
+    // document/user-file (i.e. a preview makes sense). Otherwise fall
+    // through to a native anchor that actually downloads the file.
     const isChatFile = url?.includes("/api/chat/file/");
     if (isChatFile && updatePresentingDocument) {
       const fileId = url!.split("/api/chat/file/")[1]?.split(/[?#]/)[0] || "";
-      const filename = value?.toString() || "download";
+      const isKnownDoc = docs?.some((d) => d.document_id === fileId);
+      const isKnownUserFile = userFiles?.some((f) => f.id === fileId);
+
+      if (isKnownDoc || isKnownUserFile) {
+        const filename = value?.toString() || "download";
+        return (
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              updatePresentingDocument({
+                document_id: fileId,
+                semantic_identifier: filename,
+              });
+            }}
+            className="cursor-pointer text-link hover:text-link-hover"
+          >
+            {rest.children}
+          </a>
+        );
+      }
+
+      // Not a known indexed doc — this is a generated file (PDF, PPTX,
+      // etc.). Render a real download link. `download` hints to the
+      // browser that clicking should save the file, and the backend now
+      // sets Content-Disposition: attachment on the response so it
+      // downloads even if the hint is ignored.
+      const suggestedName = value?.toString() || "download";
       return (
         <a
-          href="#"
-          onClick={(e) => {
-            e.preventDefault();
-            updatePresentingDocument({
-              document_id: fileId,
-              semantic_identifier: filename,
-            });
-          }}
+          href={url}
+          download={suggestedName}
+          target="_blank"
+          rel="noopener noreferrer"
           className="cursor-pointer text-link hover:text-link-hover"
         >
           {rest.children}
