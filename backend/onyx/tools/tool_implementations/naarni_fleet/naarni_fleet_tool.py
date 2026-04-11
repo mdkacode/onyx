@@ -16,6 +16,9 @@ Environment variables:
 
 import json
 import os
+import re
+from datetime import datetime
+from datetime import timezone
 from typing import Any
 from typing import cast
 
@@ -286,6 +289,136 @@ class NaarniFleetTool(Tool[None]):
             )
         return data.get("body")
 
+    # ── Response sanitization ────────────────────────────────────────────────
+    #
+    # The Naarni analytics backend leaks a couple of data-quality issues that
+    # confuse the LLM when it tries to answer the user's question:
+    #
+    #   1. `recentInfo.vehicleId` is actually a Trinity device id, NOT the
+    #      Naarni vehicle id (the Naarni vehicle id lives in the parent
+    #      object's `id` field). When the LLM sees
+    #      `{id: 21, recentInfo: {vehicleId: "16"}}` it writes gibberish
+    #      like "vehicle 16 is at location X" to the user.
+    #
+    #   2. `acStatus` comes back as `"b'Start'"` — a Python bytes literal
+    #      leaked from the upstream data pipeline that ingests Trinity
+    #      telemetry. The Java DTO expects `"Start"` / `"Stop"` per
+    #      `AnalyticsUtils.getVehicleStatus()` but never gets there.
+    #
+    #   3. Unix-epoch float timestamps: "timestamp": 1775900338.009 is
+    #      unhelpful to the LLM. It should see an ISO string + a relative
+    #      age hint so it can say "5 minutes ago" instead of reading out
+    #      raw epoch seconds.
+    #
+    #   4. Many fields are unnecessarily verbose floats
+    #      (`averageMileage: 0.7259090909090911`). Rounding to 2 decimals
+    #      keeps the data just as meaningful to the user and cuts token cost.
+    #
+    #   5. The envelope is big. A 50-vehicle fleet analytics response can
+    #      easily exceed 30KB → the existing llm_facing_response truncation
+    #      cuts mid-JSON and the LLM sees invalid data. The sanitizer drops
+    #      nulls + empty collections to compact by ~30%.
+
+    # Matches both `b'...'` and `b"..."` Python bytes literals at the start
+    # of a string. Captures the inner content so we can preserve it.
+    _BYTES_LITERAL_RE = re.compile(r"^b(['\"])(.*)\1$")
+
+    @classmethod
+    def _sanitize_string(cls, value: str) -> str:
+        """Strip Python bytes literal wrappers from a string.
+
+        `"b'Start'"` -> `"Start"`; regular strings pass through untouched.
+        """
+        m = cls._BYTES_LITERAL_RE.match(value)
+        if m:
+            return m.group(2)
+        return value
+
+    @staticmethod
+    def _round_floats(value: Any) -> Any:
+        """Round floats to 2 decimal places; leave other types untouched."""
+        if isinstance(value, float):
+            return round(value, 2)
+        return value
+
+    @classmethod
+    def _sanitize_recent_info(cls, recent_info: Any) -> Any:
+        """Clean up the `recentInfo` block attached to each vehicle.
+
+        Rewrites to make the LLM's life easier:
+          - Rename `vehicleId` -> `deviceId` (it was always a device id)
+          - Strip `b'...'` wrappers from `acStatus`
+          - Convert `timestamp` epoch -> ISO string + `secondsAgo`
+          - Round lat/long/odo/speed/batSoc to 2 decimals
+          - Drop keys with null values
+        """
+        if not isinstance(recent_info, dict):
+            return recent_info
+
+        cleaned: dict[str, Any] = {}
+        for key, raw_value in recent_info.items():
+            if raw_value is None:
+                continue
+            # The "vehicleId" inside recentInfo is actually the Trinity
+            # device id. Rename it so the LLM doesn't confuse it with the
+            # parent Naarni vehicle id.
+            if key in ("vehicleId", "id"):
+                cleaned["deviceId"] = str(raw_value)
+                continue
+            if key == "timestamp" and isinstance(raw_value, (int, float)):
+                try:
+                    ts = datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+                    cleaned["timestamp"] = ts.isoformat()
+                    seconds_ago = int(
+                        datetime.now(timezone.utc).timestamp() - float(raw_value)
+                    )
+                    cleaned["secondsAgo"] = max(seconds_ago, 0)
+                except (ValueError, OSError, OverflowError):
+                    cleaned["timestamp"] = raw_value
+                continue
+            if key == "acStatus" and isinstance(raw_value, str):
+                cleaned[key] = cls._sanitize_string(raw_value)
+                continue
+            if key == "vehicleStatus" and isinstance(raw_value, str):
+                cleaned[key] = cls._sanitize_string(raw_value)
+                continue
+            cleaned[key] = cls._round_floats(raw_value)
+        return cleaned
+
+    @classmethod
+    def _sanitize_response(cls, data: Any) -> Any:
+        """Walk the JSON response and clean up data-quality issues.
+
+        Entry point for the sanitizer. Handles:
+          - dicts: recurse into each value, strip nulls for known-sparse
+            fields, apply `_sanitize_recent_info` on any `recentInfo` block
+          - lists: recurse into each element
+          - strings: strip bytes literal wrappers
+          - floats: round to 2 decimals
+
+        This runs AFTER `_unwrap_envelope`, so it only sees the payload
+        the LLM will actually consume.
+        """
+        if isinstance(data, dict):
+            cleaned: dict[str, Any] = {}
+            for key, raw_value in data.items():
+                if key == "recentInfo":
+                    recent = cls._sanitize_recent_info(raw_value)
+                    if recent:
+                        cleaned[key] = recent
+                    continue
+                # Drop null values on vehicle/route/depot dicts — they
+                # pad the payload without adding information.
+                if raw_value is None:
+                    continue
+                cleaned[key] = cls._sanitize_response(raw_value)
+            return cleaned
+        if isinstance(data, list):
+            return [cls._sanitize_response(item) for item in data]
+        if isinstance(data, str):
+            return cls._sanitize_string(data)
+        return cls._round_floats(data)
+
     def _request(
         self,
         method: str,
@@ -303,9 +436,14 @@ class NaarniFleetTool(Tool[None]):
         the original HTTPError handler in `run()` which surfaces a nice
         reconnect message.
 
-        Responses are passed through `_unwrap_envelope` so CRUD endpoints
-        that wrap their payload in `{body, statusCode, success, ...}`
-        are flattened before reaching the LLM.
+        Responses are passed through two transforms before reaching the
+        LLM:
+          1. `_unwrap_envelope` — flattens Naarni's CRUD
+             `{body, statusCode, success, ...}` wrapper
+          2. `_sanitize_response` — normalizes data-quality issues
+             (Python bytes literals in acStatus, wrong `vehicleId` inside
+             `recentInfo`, unhelpful epoch timestamps, verbose floats, and
+             null-padded fields) so the LLM gets clean, compact JSON
         """
         url = f"{NAARNI_API_BASE_URL}{path}"
         resp = requests.request(
@@ -330,7 +468,7 @@ class NaarniFleetTool(Tool[None]):
                 )
 
         resp.raise_for_status()
-        return self._unwrap_envelope(resp.json())
+        return self._sanitize_response(self._unwrap_envelope(resp.json()))
 
     def _api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Simple GET with optional query params (e.g. /fleets?page=0&limit=20)."""
@@ -347,9 +485,6 @@ class NaarniFleetTool(Tool[None]):
     @staticmethod
     def _default_time_range() -> dict[str, str]:
         """Today's date range as default for analytics queries."""
-        from datetime import datetime
-        from datetime import timezone
-
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return {"start": f"{today}T00:00:00", "end": f"{today}T23:59:59"}
 
@@ -478,7 +613,104 @@ class NaarniFleetTool(Tool[None]):
             body["vehicleIds"] = params["vehicle_ids"]
         if "route_ids" in params:
             body["routeIds"] = params["route_ids"]
-        return self._api_post("/api/v1/analytics/vehicle-analytics", body)
+        result = self._api_post("/api/v1/analytics/vehicle-analytics", body)
+        return self._format_vehicle_analytics_response(result)
+
+    @staticmethod
+    def _format_vehicle_analytics_response(data: Any) -> Any:
+        """Denormalize the vehicle-analytics API response for LLM readability.
+
+        The raw API response uses ID-based lookup maps that require cross-
+        referencing three separate arrays.  The LLM is error-prone when doing
+        these lookups itself (e.g. confusing vehicle ID 34 with route ID 34).
+
+        This method flattens the data so each vehicle entry already contains
+        its resolved route name and depot name, plus all metrics and live-status
+        fields at the top level with descriptive key names.
+
+        Raw shape:
+          routes[]  depots[]  vehicles[{metrics, recentInfo}]
+          vehicleToRouteIds  vehicleToDepotIds
+
+        Returned shape: flat vehicle list with route/depot names embedded.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # Build lookup indexes keyed by integer ID
+        route_index: dict[int, str] = {}
+        for r in data.get("routes", []):
+            if isinstance(r, dict) and "id" in r:
+                route_index[int(r["id"])] = r.get("name") or f"Route {r['id']}"
+
+        depot_index: dict[int, str] = {}
+        for d in data.get("depots", []):
+            if isinstance(d, dict) and "id" in d:
+                depot_index[int(d["id"])] = d.get("name") or f"Depot {d['id']}"
+
+        # vehicleToRouteIds / vehicleToDepotIds use string keys in JSON
+        v_to_route: dict[str, Any] = data.get("vehicleToRouteIds") or {}
+        v_to_depot: dict[str, Any] = data.get("vehicleToDepotIds") or {}
+
+        enriched: list[dict[str, Any]] = []
+        for v in data.get("vehicles", []):
+            if not isinstance(v, dict):
+                continue
+
+            vid = v.get("id")
+            vid_str = str(vid) if vid is not None else None
+
+            raw_route_id = v_to_route.get(vid_str) if vid_str else None
+            raw_depot_id = v_to_depot.get(vid_str) if vid_str else None
+            route_name: str | None = None
+            depot_name: str | None = None
+            if raw_route_id is not None:
+                try:
+                    route_name = route_index.get(int(raw_route_id))
+                except (TypeError, ValueError):
+                    pass
+            if raw_depot_id is not None:
+                try:
+                    depot_name = depot_index.get(int(raw_depot_id))
+                except (TypeError, ValueError):
+                    pass
+
+            metrics: dict[str, Any] = v.get("metrics") or {}
+            recent: dict[str, Any] = v.get("recentInfo") or {}
+
+            entry: dict[str, Any] = {
+                "vehicleId": vid,
+                "registrationNumber": v.get("registrationNumber"),
+                "operationalStatus": v.get("status"),
+                "assignedRoute": route_name,
+                "assignedDepot": depot_name,
+                # Performance metrics (over the requested time range)
+                "averageMileage_kmPerKwh": metrics.get("averageMileage"),
+                "kilometerRun": metrics.get("kilometerRun"),
+                "performanceStatus": metrics.get("performanceStatus"),
+                # Live / most-recent telemetry
+                "batterySOC_percent": recent.get("batSoc"),
+                "speedKmph": recent.get("groundSpeedKmph"),
+                "liveVehicleStatus": recent.get("vehicleStatus"),
+            }
+            # Drop None values to reduce token usage
+            entry = {k: val for k, val in entry.items() if val is not None}
+            enriched.append(entry)
+
+        return {
+            "totalVehicles": len(enriched),
+            "routes": [
+                {"id": r.get("id"), "name": r.get("name")}
+                for r in data.get("routes", [])
+                if isinstance(r, dict)
+            ],
+            "depots": [
+                {"id": d.get("id"), "name": d.get("name")}
+                for d in data.get("depots", [])
+                if isinstance(d, dict)
+            ],
+            "vehicles": enriched,
+        }
 
     def _list_alerts(self, params: dict[str, Any]) -> Any:
         query_params: dict[str, Any] = {
