@@ -573,3 +573,43 @@ def test_format_dashboard_passthrough_non_dict() -> None:
 def test_epoch_to_date_converts_correctly() -> None:
     assert NaarniFleetTool._epoch_to_date(1775260800.0) == "2026-04-04"
     assert NaarniFleetTool._epoch_to_date(1775347200.0) == "2026-04-05"
+
+
+# ─── _resolve_route_ids (name → ID resolution) ────────────────────────────
+
+
+def test_resolve_route_ids_from_route_name() -> None:
+    """route_name should fuzzy-match against cached routes."""
+
+    tool = NaarniFleetTool.__new__(NaarniFleetTool)
+    tool._routes_cache = [
+        {"id": 2, "name": "Gurgaon to Dehradun"},
+        {"id": 34, "name": "Gurgaon to Amritsar"},
+        {"id": 1, "name": "Bangalore to Chennai"},
+    ]
+    tool._vehicles_cache = []
+
+    # Exact substring match
+    params: dict = {"route_name": "Dehradun"}
+    result = tool._resolve_route_ids(params)
+    assert result == [2]
+
+    # Multi-word match
+    params = {"route_name": "gurgaon amritsar"}
+    result = tool._resolve_route_ids(params)
+    assert result == [34]
+
+    # Full name
+    params = {"route_name": "Bangalore to Chennai"}
+    result = tool._resolve_route_ids(params)
+    assert result == [1]
+
+    # No match
+    params = {"route_name": "Mumbai to Pune"}
+    result = tool._resolve_route_ids(params)
+    assert result is None
+
+    # route_ids takes precedence over route_name
+    params = {"route_ids": [99], "route_name": "Dehradun"}
+    result = tool._resolve_route_ids(params)
+    assert result == [99]

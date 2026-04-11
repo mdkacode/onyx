@@ -85,11 +85,11 @@ class NaarniFleetTool(Tool[None]):
         "yesterday 00:00 to 23:59. For a single day use startDate "
         "T00:00:00 and endDate T23:59:59. If no period is mentioned, "
         "default to the last 7 days.\n"
-        "- If the user asks about a specific route by name (e.g. 'Delhi to "
-        "Dehradun'), first call list_routes to find the route ID, then use "
-        "that ID in get_performance with route_ids.\n"
-        "- If the user asks about a specific bus by registration number, first "
-        "call filter_vehicles or list_vehicles to find the vehicle ID.\n"
+        "- If the user mentions a route by name (e.g. 'Delhi to Dehradun', "
+        "'Gurgaon Amritsar trip'), pass route_name and the tool will "
+        "auto-resolve it to route_ids. No need to call list_routes first.\n"
+        "- If the user mentions a bus by registration (e.g. 'HR55AY7626'), "
+        "pass vehicle_registration and the tool will auto-resolve it.\n"
         "- For energy data, pass select_fields: ['ENERGY_CONSUMED', "
         "'ENERGY_REGENERATED'].\n"
         "- Use group_by='ROUTE' for route comparisons, 'VEHICLE' for per-bus "
@@ -108,6 +108,9 @@ class NaarniFleetTool(Tool[None]):
         self._user = user
         self._api_calls: list[dict[str, Any]] = []
         self._access_token: str | None = None
+        # Cached lookups — populated lazily on first name-based query
+        self._routes_cache: list[dict[str, Any]] | None = None
+        self._vehicles_cache: list[dict[str, Any]] | None = None
 
     def _resolve_token(self) -> str:
         """Look up the current user's Naarni access token from the DB.
@@ -200,11 +203,15 @@ class NaarniFleetTool(Tool[None]):
             f"- end_date (string): ISO datetime. Usually '{today_str}T23:59:59' "
             f"for 'last week/month', or specific date + T23:59:59 for a "
             f"single day or range end.\n\n"
-            "FILTERS:\n"
+            "FILTERS (name-based — auto-resolved to IDs):\n"
+            "- route_name (string): route name e.g. 'Dehradun', "
+            "'Gurgaon to Amritsar' — auto-resolved to route_ids\n"
+            "- vehicle_registration (string): bus registration e.g. "
+            "'HR55AY7626' — auto-resolved to vehicle_ids\n"
+            "FILTERS (ID-based — use if you already know the IDs):\n"
             "- vehicle_id (int): single vehicle for get_vehicle_details\n"
             "- vehicle_ids (int[]): filter by specific vehicle IDs\n"
-            "- route_ids (int[]): filter by route IDs "
-            "(use list_routes first to find IDs by name)\n"
+            "- route_ids (int[]): filter by route IDs\n"
             "- depot_ids (int[]): filter by depot IDs\n"
             "- fleet_id (int): filter by fleet\n\n"
             "GROUPING (for get_performance / get_vehicle_activity):\n"
@@ -562,6 +569,128 @@ class NaarniFleetTool(Tool[None]):
         start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
         return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
 
+    # ── Name → ID resolution ────────────────────────────────────────────────
+    #
+    # The LLM often knows a route name ("Delhi to Dehradun") or a bus
+    # registration ("HR55AY7626") but not the numeric ID the API needs.
+    # These helpers auto-resolve names to IDs so the LLM doesn't have to
+    # make a separate list_routes / list_vehicles call first.
+
+    def _get_routes_cached(self) -> list[dict[str, Any]]:
+        """Fetch and cache the routes list for the lifetime of this tool call."""
+        if self._routes_cache is None:
+            raw = self._api_get("/api/v1/routes")
+            self._routes_cache = raw if isinstance(raw, list) else []
+        return self._routes_cache
+
+    def _resolve_route_ids(self, params: dict[str, Any]) -> list[int] | None:
+        """Resolve route_ids from params, auto-matching route_name if given.
+
+        Accepts:
+          - route_ids (int[]) — used directly
+          - route_name (string) — fuzzy-matched against the routes list
+
+        Returns a list of matching route IDs, or None if neither param is set.
+        """
+        if "route_ids" in params:
+            return params["route_ids"]
+
+        route_name = params.get("route_name")
+        if not route_name:
+            return None
+
+        routes = self._get_routes_cached()
+        needle = route_name.lower()
+        matched: list[int] = []
+        for r in routes:
+            name = (r.get("name") or "").lower()
+            # Match if the user's query is a substring of the route name,
+            # or any word in the query appears in the route name.
+            # e.g. "dehradun" matches "Gurgaon to Dehradun",
+            #      "delhi dehradun" matches too (Delhi≈Gurgaon region).
+            words = needle.split()
+            if needle in name or all(w in name for w in words if len(w) > 2):
+                rid = r.get("id")
+                if rid is not None:
+                    matched.append(int(rid))
+
+        if matched:
+            logger.info("Resolved route_name=%r → route_ids=%s", route_name, matched)
+            return matched
+
+        logger.warning(
+            "Could not resolve route_name=%r from %d routes",
+            route_name,
+            len(routes),
+        )
+        return None
+
+    def _resolve_vehicle_ids(self, params: dict[str, Any]) -> list[int] | None:
+        """Resolve vehicle_ids from params, auto-matching vehicle_registration.
+
+        Accepts:
+          - vehicle_ids (int[]) — used directly
+          - vehicle_registration (string) — exact or partial match
+
+        Returns a list of matching vehicle IDs, or None if neither is set.
+        """
+        if "vehicle_ids" in params:
+            return params["vehicle_ids"]
+
+        reg = params.get("vehicle_registration")
+        if not reg:
+            return None
+
+        # Fetch vehicles via filter API (no filter = all vehicles)
+        if self._vehicles_cache is None:
+            raw = self._api_get_with_body(
+                "/api/v1/vehicles/filter",
+                {
+                    "filterContext": {},
+                    "page": {"page": 0, "size": 100},
+                    "select": ["VEHICLE"],
+                },
+            )
+            content = raw.get("content", []) if isinstance(raw, dict) else []
+            self._vehicles_cache = content
+
+        needle = reg.upper().replace(" ", "")
+        matched: list[int] = []
+        for v in self._vehicles_cache:
+            v_reg = (v.get("registrationNumber") or "").upper().replace(" ", "")
+            if needle in v_reg or v_reg in needle:
+                vid = v.get("id")
+                if vid is not None:
+                    matched.append(int(vid))
+
+        if matched:
+            logger.info(
+                "Resolved vehicle_registration=%r → vehicle_ids=%s", reg, matched
+            )
+            return matched
+
+        logger.warning(
+            "Could not resolve vehicle_registration=%r from %d vehicles",
+            reg,
+            len(self._vehicles_cache),
+        )
+        return None
+
+    def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Auto-resolve route_name → route_ids and vehicle_registration → vehicle_ids.
+
+        Mutates and returns params with the resolved IDs injected.
+        """
+        resolved_routes = self._resolve_route_ids(params)
+        if resolved_routes is not None:
+            params["route_ids"] = resolved_routes
+
+        resolved_vehicles = self._resolve_vehicle_ids(params)
+        if resolved_vehicles is not None:
+            params["vehicle_ids"] = resolved_vehicles
+
+        return params
+
     # ── Action handlers ───────────────────────────────────────────────────────
     # Matches Postman collection: Naarni Backend
 
@@ -629,6 +758,7 @@ class NaarniFleetTool(Tool[None]):
 
     def _get_performance(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/performance"""
+        params = self._inject_resolved_ids(params)
         default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
@@ -655,6 +785,7 @@ class NaarniFleetTool(Tool[None]):
 
     def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/vehicle-activity"""
+        params = self._inject_resolved_ids(params)
         default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
@@ -683,6 +814,7 @@ class NaarniFleetTool(Tool[None]):
 
     def _get_vehicle_analytics(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/vehicle-analytics"""
+        params = self._inject_resolved_ids(params)
         default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
