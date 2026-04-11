@@ -319,3 +319,257 @@ def test_format_vehicle_analytics_empty_response() -> None:
     result = NaarniFleetTool._format_vehicle_analytics_response(empty)
     assert result["totalVehicles"] == 0
     assert result["vehicles"] == []
+
+
+# ─── _format_performance_response ──────────────────────────────────────────
+
+
+def test_format_performance_aggregate() -> None:
+    """No groupBy → totalResults is flattened to a single dict."""
+    raw = {
+        "vehicles": None,
+        "routes": None,
+        "depots": None,
+        "timeGroups": None,
+        "totalResults": [
+            {
+                "averageMileage": 0.795,
+                "kilometerRun": 26844.12,
+                "averageKilometerRun": 547.839,
+                "energyConsumed": 21126.98,
+                "energyRegenerated": 4946.55,
+                "performanceStatus": "GREAT",
+            }
+        ],
+    }
+    result = NaarniFleetTool._format_performance_response(raw)
+    assert result["energyConsumed"] == 21126.98
+    assert result["energyRegenerated"] == 4946.55
+    assert result["kilometerRun"] == 26844.12
+    assert "vehicles" not in result
+    assert "timeGroups" not in result
+
+
+def test_format_performance_by_time() -> None:
+    """groupBy=TIME → epoch timeGroups flattened to daily with date strings."""
+    raw = {
+        "vehicles": None,
+        "routes": None,
+        "depots": None,
+        "timeGroups": [
+            {
+                "timeGroup": 1775260800.0,  # 2026-04-04 UTC
+                "metrics": [
+                    {
+                        "timeGroup": 1775260800.0,
+                        "averageMileage": 0.88,
+                        "kilometerRun": 3821.38,
+                        "energyConsumed": 3169.02,
+                        "energyRegenerated": 715.14,
+                        "performanceStatus": "GREAT",
+                    }
+                ],
+            },
+            {
+                "timeGroup": 1775347200.0,  # 2026-04-05 UTC
+                "metrics": [
+                    {
+                        "timeGroup": 1775347200.0,
+                        "averageMileage": 0.747,
+                        "kilometerRun": 3861.61,
+                        "energyConsumed": 3057.99,
+                        "energyRegenerated": 724.58,
+                        "performanceStatus": "GREAT",
+                    }
+                ],
+            },
+        ],
+        "totalResults": None,
+    }
+    result = NaarniFleetTool._format_performance_response(raw)
+    assert "daily" in result
+    assert len(result["daily"]) == 2
+    day1 = result["daily"][0]
+    assert day1["date"] == "2026-04-04"
+    assert day1["energyConsumed"] == 3169.02
+    assert day1["energyRegenerated"] == 715.14
+    assert "timeGroup" not in day1  # epoch must be stripped
+    day2 = result["daily"][1]
+    assert day2["date"] == "2026-04-05"
+    assert day2["energyConsumed"] == 3057.99
+
+
+def test_format_performance_by_vehicle() -> None:
+    """groupBy=VEHICLE → vehicles[] with flattened metrics."""
+    raw = {
+        "vehicles": [
+            {
+                "id": 1,
+                "registrationNumber": "HR55AY7626",
+                "model": "A_12.5_M",
+                "status": "NOT_MOVING",
+                "metrics": {
+                    "id": "1",
+                    "averageMileage": 0.827,
+                    "kilometerRun": 4193.62,
+                    "energyConsumed": 4146.71,
+                    "energyRegenerated": 1048.36,
+                    "performanceStatus": "GREAT",
+                },
+            },
+        ],
+        "routes": None,
+        "depots": None,
+        "timeGroups": None,
+        "totalResults": None,
+    }
+    result = NaarniFleetTool._format_performance_response(raw)
+    assert "vehicles" in result
+    v = result["vehicles"][0]
+    assert v["vehicleId"] == 1
+    assert v["registrationNumber"] == "HR55AY7626"
+    assert v["energyConsumed"] == 4146.71
+    assert v["energyRegenerated"] == 1048.36
+    assert v["kilometerRun"] == 4193.62
+    # The nested metrics "id" field should be excluded
+    assert "id" not in v
+
+
+def test_format_performance_by_route() -> None:
+    """groupBy=ROUTE → routes[] with flattened metrics and city names."""
+    raw = {
+        "vehicles": None,
+        "routes": [
+            {
+                "id": 34,
+                "name": "Gurgaon to Amritsar",
+                "startCityName": "Gurgaon",
+                "endCityName": "Amritsar",
+                "metrics": {
+                    "id": "34",
+                    "averageMileage": 0.797,
+                    "kilometerRun": 14294.12,
+                    "energyConsumed": 9701.69,
+                    "energyRegenerated": 2203.75,
+                    "performanceStatus": "GREAT",
+                },
+            },
+        ],
+        "depots": None,
+        "timeGroups": None,
+        "totalResults": None,
+    }
+    result = NaarniFleetTool._format_performance_response(raw)
+    assert "routes" in result
+    r = result["routes"][0]
+    assert r["routeId"] == 34
+    assert r["routeName"] == "Gurgaon to Amritsar"
+    assert r["startCity"] == "Gurgaon"
+    assert r["endCity"] == "Amritsar"
+    assert r["energyConsumed"] == 9701.69
+    assert r["energyRegenerated"] == 2203.75
+
+
+def test_format_performance_by_depot() -> None:
+    """groupBy=DEPOT → depots[] with flattened metrics."""
+    raw = {
+        "vehicles": None,
+        "routes": None,
+        "depots": [
+            {
+                "id": 93,
+                "name": "Gurgaon",
+                "metrics": {
+                    "id": "93",
+                    "averageMileage": 0.795,
+                    "kilometerRun": 26844.12,
+                    "energyConsumed": 21126.98,
+                    "energyRegenerated": 4946.55,
+                    "performanceStatus": "GREAT",
+                },
+            },
+        ],
+        "timeGroups": None,
+        "totalResults": None,
+    }
+    result = NaarniFleetTool._format_performance_response(raw)
+    assert "depots" in result
+    d = result["depots"][0]
+    assert d["depotId"] == 93
+    assert d["depotName"] == "Gurgaon"
+    assert d["energyConsumed"] == 21126.98
+
+
+def test_format_performance_passthrough_non_dict() -> None:
+    assert NaarniFleetTool._format_performance_response("error") == "error"
+    assert NaarniFleetTool._format_performance_response(None) is None
+
+
+# ─── _format_vehicle_activity_response ─────────────────────────────────────
+
+
+def test_format_vehicle_activity_by_time() -> None:
+    """groupBy=TIME → daily with date strings and activity counts."""
+    raw = {
+        "vehicles": None,
+        "routes": None,
+        "depots": None,
+        "timeGroups": [
+            {
+                "timeGroup": 1775260800.0,  # 2026-04-04
+                "metrics": [
+                    {
+                        "timeGroup": 1775260800.0,
+                        "kmsRun": 3821.38,
+                        "activeCount": 7,
+                        "inactiveCount": 1,
+                        "totalCount": 8,
+                    }
+                ],
+            },
+        ],
+        "totalResults": None,
+    }
+    result = NaarniFleetTool._format_vehicle_activity_response(raw)
+    assert "daily" in result
+    day = result["daily"][0]
+    assert day["date"] == "2026-04-04"
+    assert day["activeCount"] == 7
+    assert day["inactiveCount"] == 1
+    assert day["totalCount"] == 8
+    assert day["kmsRun"] == 3821.38
+    assert "timeGroup" not in day
+
+
+# ─── _format_dashboard_response ────────────────────────────────────────────
+
+
+def test_format_dashboard_flattens_single_result() -> None:
+    raw = {
+        "results": [
+            {
+                "averageMileage": 0.795,
+                "kilometerRun": 26844.12,
+                "averageKilometerRun": 547.839,
+            }
+        ],
+        "executionDurationMs": 14,
+        "fromCache": False,
+    }
+    result = NaarniFleetTool._format_dashboard_response(raw)
+    assert result["averageMileage"] == 0.795
+    assert result["kilometerRun"] == 26844.12
+    assert "executionDurationMs" not in result
+    assert "fromCache" not in result
+
+
+def test_format_dashboard_passthrough_non_dict() -> None:
+    assert NaarniFleetTool._format_dashboard_response("error") == "error"
+
+
+# ─── _epoch_to_date ───────────────────────────────────────────────────────
+
+
+def test_epoch_to_date_converts_correctly() -> None:
+    assert NaarniFleetTool._epoch_to_date(1775260800.0) == "2026-04-04"
+    assert NaarniFleetTool._epoch_to_date(1775347200.0) == "2026-04-05"

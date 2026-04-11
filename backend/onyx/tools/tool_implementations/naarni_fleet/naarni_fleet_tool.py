@@ -199,6 +199,7 @@ class NaarniFleetTool(Tool[None]):
                                 "- vehicle_id (int): vehicle ID for get_vehicle_details\n"
                                 "- vehicle_ids (int[]): filter by specific vehicles\n"
                                 "- route_ids (int[]): filter by routes\n"
+                                "- depot_ids (int[]): filter by depots\n"
                                 "- fleet_id (int): filter by fleet\n"
                                 "- start_date (string): ISO date like '2025-10-01T00:00:00'\n"
                                 "- end_date (string): ISO date like '2025-10-31T00:00:00'\n"
@@ -500,7 +501,8 @@ class NaarniFleetTool(Tool[None]):
 
     def _get_dashboard(self, params: dict[str, Any]) -> Any:  # noqa: ARG002
         """GET /api/v1/dashboard — requires org + role."""
-        return self._api_get("/api/v1/dashboard")
+        result = self._api_get("/api/v1/dashboard")
+        return self._format_dashboard_response(result)
 
     def _list_vehicles(self, params: dict[str, Any]) -> Any:
         """GET /api/v1/vehicles/fleet/{id} or filter."""
@@ -580,7 +582,10 @@ class NaarniFleetTool(Tool[None]):
             body["vehicleIds"] = params["vehicle_ids"]
         if "route_ids" in params:
             body["routeIds"] = params["route_ids"]
-        return self._api_post("/api/v1/analytics/performance", body)
+        if "depot_ids" in params:
+            body["depotIds"] = params["depot_ids"]
+        result = self._api_post("/api/v1/analytics/performance", body)
+        return self._format_performance_response(result)
 
     def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/vehicle-activity"""
@@ -603,9 +608,12 @@ class NaarniFleetTool(Tool[None]):
             body["vehicleIds"] = params["vehicle_ids"]
         if "route_ids" in params:
             body["routeIds"] = params["route_ids"]
+        if "depot_ids" in params:
+            body["depotIds"] = params["depot_ids"]
         if "status" in params:
             body["status"] = params["status"]
-        return self._api_post("/api/v1/analytics/vehicle-activity", body)
+        result = self._api_post("/api/v1/analytics/vehicle-activity", body)
+        return self._format_vehicle_activity_response(result)
 
     def _get_vehicle_analytics(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/vehicle-analytics"""
@@ -622,6 +630,218 @@ class NaarniFleetTool(Tool[None]):
             body["routeIds"] = params["route_ids"]
         result = self._api_post("/api/v1/analytics/vehicle-analytics", body)
         return self._format_vehicle_analytics_response(result)
+
+    # ── Analytics response formatters ────────────────────────────────────────
+    #
+    # The Naarni analytics API returns data with:
+    #   - Unix epoch timestamps in `timeGroup` fields
+    #   - Metrics buried inside nested arrays
+    #   - Null arrays for unused groupBy variants
+    #
+    # These formatters flatten and humanize the data so the LLM can answer
+    # questions directly instead of struggling with epoch math and nesting.
+
+    @staticmethod
+    def _epoch_to_date(epoch: float | int) -> str:
+        """Convert a Unix epoch to a YYYY-MM-DD date string."""
+        try:
+            return datetime.fromtimestamp(float(epoch), tz=timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+        except (ValueError, OSError, OverflowError):
+            return str(epoch)
+
+    @classmethod
+    def _format_dashboard_response(cls, data: Any) -> Any:
+        """Flatten the dashboard response.
+
+        Raw: {results: [{averageMileage, kilometerRun, ...}], executionDurationMs, fromCache}
+        Returned: {averageMileage, kilometerRun, averageKilometerRun}
+        """
+        if not isinstance(data, dict):
+            return data
+        results = data.get("results")
+        if isinstance(results, list) and len(results) == 1:
+            return results[0]
+        if isinstance(results, list) and len(results) > 1:
+            return {"summaries": results}
+        return data
+
+    @classmethod
+    def _format_performance_response(cls, data: Any) -> Any:
+        """Flatten the performance analytics response for LLM readability.
+
+        The raw response has four mutually exclusive grouping arrays plus
+        an aggregate `totalResults` — only one is populated per request.
+        This method detects which shape was returned and flattens it.
+
+        Shapes handled:
+          - No groupBy → totalResults[{metrics}] → flat aggregate dict
+          - groupBy=TIME → timeGroups[{timeGroup: epoch, metrics: [...]}]
+                         → daily[{date, ...metrics}]
+          - groupBy=VEHICLE → vehicles[{id, registrationNumber, metrics: {...}}]
+                            → vehicles[{vehicleId, registrationNumber, ...metrics}]
+          - groupBy=ROUTE → routes[{id, name, metrics: {...}}]
+                          → routes[{routeId, routeName, ...metrics}]
+          - groupBy=DEPOT → depots[{id, name, metrics: {...}}]
+                          → depots[{depotId, depotName, ...metrics}]
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # --- Aggregate (no groupBy) ---
+        total = data.get("totalResults")
+        if isinstance(total, list) and total:
+            return total[0] if len(total) == 1 else {"totals": total}
+
+        # --- groupBy=TIME ---
+        time_groups = data.get("timeGroups")
+        if isinstance(time_groups, list) and time_groups:
+            daily: list[dict[str, Any]] = []
+            for tg in time_groups:
+                if not isinstance(tg, dict):
+                    continue
+                epoch = tg.get("timeGroup")
+                date_str = cls._epoch_to_date(epoch) if epoch is not None else None
+                metrics_list = tg.get("metrics") or []
+                for m in metrics_list:
+                    if not isinstance(m, dict):
+                        continue
+                    row: dict[str, Any] = {}
+                    if date_str:
+                        row["date"] = date_str
+                    for k, v in m.items():
+                        if k == "timeGroup":
+                            continue
+                        if v is not None:
+                            row[k] = v
+                    daily.append(row)
+            return {"daily": daily}
+
+        # --- groupBy=VEHICLE ---
+        vehicles = data.get("vehicles")
+        if isinstance(vehicles, list) and vehicles:
+            flat: list[dict[str, Any]] = []
+            for v in vehicles:
+                if not isinstance(v, dict):
+                    continue
+                metrics = v.get("metrics") or {}
+                entry: dict[str, Any] = {
+                    "vehicleId": v.get("id"),
+                    "registrationNumber": v.get("registrationNumber"),
+                }
+                for k, val in metrics.items():
+                    if k == "id" or val is None:
+                        continue
+                    entry[k] = val
+                entry = {k: val for k, val in entry.items() if val is not None}
+                flat.append(entry)
+            return {"vehicles": flat}
+
+        # --- groupBy=ROUTE ---
+        routes = data.get("routes")
+        if isinstance(routes, list) and routes:
+            flat_routes: list[dict[str, Any]] = []
+            for r in routes:
+                if not isinstance(r, dict):
+                    continue
+                metrics = r.get("metrics") or {}
+                entry = {
+                    "routeId": r.get("id"),
+                    "routeName": r.get("name"),
+                    "startCity": r.get("startCityName"),
+                    "endCity": r.get("endCityName"),
+                }
+                for k, val in metrics.items():
+                    if k == "id" or val is None:
+                        continue
+                    entry[k] = val
+                entry = {k: val for k, val in entry.items() if val is not None}
+                flat_routes.append(entry)
+            return {"routes": flat_routes}
+
+        # --- groupBy=DEPOT ---
+        depots = data.get("depots")
+        if isinstance(depots, list) and depots:
+            flat_depots: list[dict[str, Any]] = []
+            for d in depots:
+                if not isinstance(d, dict):
+                    continue
+                metrics = d.get("metrics") or {}
+                entry = {
+                    "depotId": d.get("id"),
+                    "depotName": d.get("name"),
+                }
+                for k, val in metrics.items():
+                    if k == "id" or val is None:
+                        continue
+                    entry[k] = val
+                entry = {k: val for k, val in entry.items() if val is not None}
+                flat_depots.append(entry)
+            return {"depots": flat_depots}
+
+        return data
+
+    @classmethod
+    def _format_vehicle_activity_response(cls, data: Any) -> Any:
+        """Flatten the vehicle-activity analytics response.
+
+        Same timeGroup-based structure as performance but with different
+        metric fields (activeCount, inactiveCount, totalCount, kmsRun).
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # --- Aggregate ---
+        total = data.get("totalResults")
+        if isinstance(total, list) and total:
+            return total[0] if len(total) == 1 else {"totals": total}
+
+        # --- groupBy=TIME ---
+        time_groups = data.get("timeGroups")
+        if isinstance(time_groups, list) and time_groups:
+            daily: list[dict[str, Any]] = []
+            for tg in time_groups:
+                if not isinstance(tg, dict):
+                    continue
+                epoch = tg.get("timeGroup")
+                date_str = cls._epoch_to_date(epoch) if epoch is not None else None
+                metrics_list = tg.get("metrics") or []
+                for m in metrics_list:
+                    if not isinstance(m, dict):
+                        continue
+                    row: dict[str, Any] = {}
+                    if date_str:
+                        row["date"] = date_str
+                    for k, v in m.items():
+                        if k == "timeGroup":
+                            continue
+                        if v is not None:
+                            row[k] = v
+                    daily.append(row)
+            return {"daily": daily}
+
+        # --- groupBy=VEHICLE ---
+        vehicles = data.get("vehicles")
+        if isinstance(vehicles, list) and vehicles:
+            flat: list[dict[str, Any]] = []
+            for v in vehicles:
+                if not isinstance(v, dict):
+                    continue
+                metrics = v.get("metrics") or {}
+                entry: dict[str, Any] = {
+                    "vehicleId": v.get("id"),
+                    "registrationNumber": v.get("registrationNumber"),
+                }
+                for k, val in metrics.items():
+                    if k == "id" or val is None:
+                        continue
+                    entry[k] = val
+                entry = {k: val for k, val in entry.items() if val is not None}
+                flat.append(entry)
+            return {"vehicles": flat}
+
+        return data
 
     @staticmethod
     def _format_vehicle_analytics_response(data: Any) -> Any:
