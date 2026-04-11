@@ -18,6 +18,7 @@ import json
 import os
 import re
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import Any
 from typing import cast
@@ -75,8 +76,20 @@ class NaarniFleetTool(Tool[None]):
         "Use this tool when the user asks about vehicles, buses, fleet status, "
         "routes, depots, mileage, kilometers run, battery state of charge (SoC), "
         "energy consumption, vehicle performance, alerts, warnings, "
-        "or any operational fleet data. "
-        "Choose the appropriate 'action' and pass relevant 'parameters'."
+        "or any operational fleet data.\n"
+        "IMPORTANT GUIDELINES:\n"
+        "- If the user asks about a specific route by name (e.g. 'Delhi to "
+        "Dehradun'), first call list_routes to find the route ID, then use "
+        "that ID in get_performance with route_ids.\n"
+        "- If the user asks about a specific bus by registration number, first "
+        "call filter_vehicles or list_vehicles to find the vehicle ID.\n"
+        "- For performance/mileage/energy queries, ALWAYS provide start_date "
+        "and end_date. If the user says 'last month' compute the dates. "
+        "If no period is mentioned, use the last 7 days.\n"
+        "- For energy data, pass select_fields: ['ENERGY_CONSUMED', "
+        "'ENERGY_REGENERATED'].\n"
+        "- Use group_by='ROUTE' for route comparisons, 'VEHICLE' for per-bus "
+        "breakdown, 'TIME' with time_granularity='DAY' for daily trends."
     )
     DISPLAY_NAME = "Fleet Data"
 
@@ -89,6 +102,7 @@ class NaarniFleetTool(Tool[None]):
         super().__init__(emitter=emitter)
         self._id = tool_id
         self._user = user
+        self._api_calls: list[dict[str, Any]] = []
         self._access_token: str | None = None
 
     def _resolve_token(self) -> str:
@@ -195,21 +209,33 @@ class NaarniFleetTool(Tool[None]):
                         PARAMS_FIELD: {
                             "type": "object",
                             "description": (
-                                "Optional parameters depending on the action. Common params:\n"
-                                "- vehicle_id (int): vehicle ID for get_vehicle_details\n"
-                                "- vehicle_ids (int[]): filter by specific vehicles\n"
-                                "- route_ids (int[]): filter by routes\n"
-                                "- depot_ids (int[]): filter by depots\n"
-                                "- fleet_id (int): filter by fleet\n"
-                                "- start_date (string): ISO date like '2025-10-01T00:00:00'\n"
-                                "- end_date (string): ISO date like '2025-10-31T00:00:00'\n"
+                                "Parameters depending on the action.\n\n"
+                                "DATE RANGE (CRITICAL for performance/activity/analytics):\n"
+                                "- start_date (string): ISO date e.g. '2026-03-01T00:00:00'. "
+                                "ALWAYS set this for performance queries.\n"
+                                "- end_date (string): ISO date e.g. '2026-03-31T23:59:59'. "
+                                "ALWAYS set this for performance queries.\n\n"
+                                "FILTERS:\n"
+                                "- vehicle_id (int): single vehicle for get_vehicle_details\n"
+                                "- vehicle_ids (int[]): filter by specific vehicle IDs\n"
+                                "- route_ids (int[]): filter by route IDs "
+                                "(use list_routes first to find IDs by name)\n"
+                                "- depot_ids (int[]): filter by depot IDs\n"
+                                "- fleet_id (int): filter by fleet\n\n"
+                                "GROUPING (for get_performance / get_vehicle_activity):\n"
                                 "- group_by (string): 'VEHICLE', 'ROUTE', 'DEPOT', or 'TIME'\n"
-                                "- time_granularity (string): 'DAY', 'WEEK', or 'MONTH' (when group_by=TIME)\n"
-                                "- select_fields (string[]): extra fields like 'ENERGY_CONSUMED', "
-                                "'ENERGY_REGENERATED', 'KMS_GOAL', 'ENERGY_IDLED', 'KILOMETERS_RUN_MTD'\n"
+                                "- time_granularity (string): 'DAY', 'WEEK', or 'MONTH' "
+                                "(required when group_by=TIME)\n"
+                                "- select_fields (string[]): extra metrics — "
+                                "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'KMS_GOAL', "
+                                "'ENERGY_IDLED', 'KILOMETERS_RUN_MTD'\n"
+                                "- order_by (object[]): e.g. "
+                                '[{"field": "KILOMETER_RUN", "direction": "DESC"}]\n\n'
+                                "ALERTS:\n"
                                 "- alert_status (string): 'TRIGGERED', 'RESOLVED'\n"
                                 "- criticality (string): 'CRITICAL', 'WARNING'\n"
-                                "- category (string): alert category like 'AC', 'MOST_IMP', 'CHARGING_BATTERY'\n"
+                                "- category (string): 'AC', 'MOST_IMP', 'CHARGING_BATTERY'\n\n"
+                                "PAGINATION:\n"
                                 "- page (int): page number, default 0\n"
                                 "- size (int): page size, default 20"
                             ),
@@ -454,6 +480,15 @@ class NaarniFleetTool(Tool[None]):
              null-padded fields) so the LLM gets clean, compact JSON
         """
         url = f"{NAARNI_API_BASE_URL}{path}"
+
+        # Log the outgoing request for debugging
+        call_log: dict[str, Any] = {"method": method, "path": path}
+        if json_body:
+            call_log["body"] = json_body
+        if params:
+            call_log["queryParams"] = params
+        logger.info("Naarni API call: %s %s body=%s", method, path, json_body)
+
         resp = requests.request(
             method,
             url,
@@ -475,6 +510,10 @@ class NaarniFleetTool(Tool[None]):
                     timeout=15,
                 )
 
+        call_log["status"] = resp.status_code
+        self._api_calls.append(call_log)
+        logger.info("Naarni API response: %s %s -> %d", method, path, resp.status_code)
+
         resp.raise_for_status()
         return self._sanitize_response(self._unwrap_envelope(resp.json()))
 
@@ -492,9 +531,18 @@ class NaarniFleetTool(Tool[None]):
 
     @staticmethod
     def _default_time_range() -> dict[str, str]:
-        """Today's date range as default for analytics queries."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return {"start": f"{today}T00:00:00", "end": f"{today}T23:59:59"}
+        """Last 30 days as default for analytics queries.
+
+        Using "today only" was the root cause of 0.0 values — most routes
+        have no data for a single day when buses are between trips.  A 30-day
+        window matches what the dashboard UI defaults to and ensures the LLM
+        always gets meaningful aggregate data when the user doesn't specify
+        an explicit date range.
+        """
+        now = datetime.now(timezone.utc)
+        end = now.strftime("%Y-%m-%d")
+        start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
 
     # ── Action handlers ───────────────────────────────────────────────────────
     # Matches Postman collection: Naarni Backend
@@ -1085,7 +1133,12 @@ class NaarniFleetTool(Tool[None]):
             )
         )
 
-        llm_response = json.dumps(result)
+        # Build LLM-facing response with API call metadata for transparency
+        llm_payload: dict[str, Any] = {"data": result}
+        if self._api_calls:
+            llm_payload["_apiCalls"] = self._api_calls
+
+        llm_response = json.dumps(llm_payload)
 
         # Truncate if absurdly large so we don't blow the LLM context
         if len(llm_response) > 30_000:
