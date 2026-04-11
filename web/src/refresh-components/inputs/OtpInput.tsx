@@ -26,7 +26,7 @@ export interface OtpInputProps {
   onChange: (value: string) => void;
   /** Optional callback fired once the user has entered exactly `length` digits. */
   onComplete?: (value: string) => void;
-  /** Number of boxes to render. Default 6. */
+  /** Number of boxes to render. Default 4 (matches Naarni SMS OTP length). */
   length?: number;
   /** Show red borders instead of the default. */
   error?: boolean;
@@ -42,7 +42,7 @@ export default function OtpInput({
   value,
   onChange,
   onComplete,
-  length = 6,
+  length = 4,
   error = false,
   disabled = false,
   autoFocus = true,

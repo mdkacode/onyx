@@ -19,7 +19,9 @@ type Step = "idle" | "phone" | "otp" | "loading";
 
 // Keep in sync with the backend normalize_phone_number helper. We validate in
 // the UI so users get instant feedback instead of waiting for a round-trip.
-const OTP_LENGTH = 6;
+// Naarni SMS OTPs are 4 digits (verified against Postman collection
+// responses in /api/v1/auth/token: otp=9595, otp=4737, otp=1990).
+const OTP_LENGTH = 4;
 const RESEND_COOLDOWN_SECONDS = 30;
 
 /**
@@ -277,7 +279,7 @@ export default function NaarniConnectPage() {
                 Enter your Naarni phone number
               </Text>
               <Text text03>
-                We&apos;ll send a 6-digit code to this number via SMS. Enter the
+                We&apos;ll send a 4-digit code to this number via SMS. Enter the
                 10-digit number without the country code.
               </Text>
               <InputTypeIn
