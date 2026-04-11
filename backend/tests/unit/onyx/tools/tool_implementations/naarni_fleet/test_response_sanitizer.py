@@ -40,8 +40,8 @@ def test_sanitize_string_does_not_touch_mid_string_b() -> None:
 # ─── Float rounding ──────────────────────────────────────────────────────────
 
 
-def test_round_floats_rounds_to_two_decimals() -> None:
-    assert NaarniFleetTool._round_floats(0.7259090909090911) == 0.73
+def test_round_floats_rounds_to_three_decimals() -> None:
+    assert NaarniFleetTool._round_floats(0.7259090909090911) == 0.726
     assert NaarniFleetTool._round_floats(1.0) == 1.0
     assert NaarniFleetTool._round_floats(0.0) == 0.0
 
@@ -99,9 +99,9 @@ def test_sanitize_recent_info_rounds_floats() -> None:
         "batSoc": 70.8312,
     }
     out = NaarniFleetTool._sanitize_recent_info(recent)
-    assert out["latitude"] == 29.3
-    assert out["longitude"] == 77.72
-    assert out["batSoc"] == 70.83
+    assert out["latitude"] == 29.299
+    assert out["longitude"] == 77.721
+    assert out["batSoc"] == 70.831
 
 
 def test_sanitize_recent_info_handles_non_dict_gracefully() -> None:
@@ -215,8 +215,8 @@ def test_full_response_sanitization_fixes_all_real_bugs() -> None:
     # Timestamp converted to ISO + secondsAgo
     assert ri["timestamp"] == "2023-11-14T22:13:20+00:00"
     assert isinstance(ri["secondsAgo"], int)
-    # Floats rounded
-    assert ri["latitude"] == 29.3
+    # Floats rounded to 3 decimals
+    assert ri["latitude"] == 29.299
     assert ri["batSoc"] == 70.8
 
     # 3. The second vehicle has metrics=null and recentInfo=null. Both
@@ -226,9 +226,11 @@ def test_full_response_sanitization_fixes_all_real_bugs() -> None:
     assert "metrics" not in v35
     assert "recentInfo" not in v35
 
-    # 4. Metrics with verbose floats are rounded.
+    # 4. Metrics with verbose floats are rounded to 3 decimals (preserves
+    # enough precision for kWh/km mileage to stay meaningful to a fleet
+    # manager, while still compacting the 15-digit float noise).
     metrics = v21["metrics"]
-    assert metrics["averageMileage"] == 0.73
+    assert metrics["averageMileage"] == 0.726
     assert metrics["kilometerRun"] == 5895.0
     assert metrics["performanceStatus"] == "GREAT"
 

@@ -336,9 +336,16 @@ class NaarniFleetTool(Tool[None]):
 
     @staticmethod
     def _round_floats(value: Any) -> Any:
-        """Round floats to 2 decimal places; leave other types untouched."""
+        """Round floats to 3 decimal places; leave other types untouched.
+
+        Three decimals preserves enough precision for mileage metrics
+        (kWh/km) and GPS coordinates to be meaningful to a fleet manager,
+        while still compacting the absurd
+        `averageMileage: 0.7259090909090911` noise that comes out of
+        the analytics engine.
+        """
         if isinstance(value, float):
-            return round(value, 2)
+            return round(value, 3)
         return value
 
     @classmethod
