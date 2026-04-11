@@ -236,7 +236,8 @@ def test_format_vehicle_analytics_denormalizes_route_and_depot() -> None:
     assert v21["registrationNumber"] == "HR55AY9237"
     assert v21["assignedRoute"] == "Gurgaon to Dehradun"
     assert v21["assignedDepot"] == "Gurgaon"
-    assert v21["operationalStatus"] == "NOT_MOVING"
+    # isMoving is derived from real-time groundSpeedKmph (0.0 → not moving)
+    assert v21["isMoving"] is False
     assert v21["averageMileage_kmPerKwh"] == 0.726
     assert v21["kilometerRun"] == 5895.0
     assert v21["performanceStatus"] == "GREAT"
@@ -250,6 +251,8 @@ def test_format_vehicle_analytics_denormalizes_route_and_depot() -> None:
     assert v34["assignedRoute"] == "Gurgaon to Dehradun"
     assert v34["assignedDepot"] == "Gurgaon"
     assert v34["speedKmph"] == 62.5
+    # isMoving=True because groundSpeedKmph=62.5 > 0
+    assert v34["isMoving"] is True
 
 
 def test_format_vehicle_analytics_returns_route_and_depot_lists() -> None:
@@ -288,9 +291,13 @@ def test_format_vehicle_analytics_drops_none_values() -> None:
     assert "assignedDepot" not in v
     assert "averageMileage_kmPerKwh" not in v
     assert "batterySOC_percent" not in v
+    assert "liveVehicleStatus" not in v
+    assert "speedKmph" not in v
     # Non-None values must still be present
     assert v["vehicleId"] == 99
     assert v["registrationNumber"] == "DL01AB0001"
+    # isMoving defaults to False when no telemetry is available
+    assert v["isMoving"] is False
 
 
 def test_format_vehicle_analytics_passthrough_on_non_dict() -> None:

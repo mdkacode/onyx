@@ -19,10 +19,11 @@ from onyx.configs.constants import FileOrigin
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.utils import build_frontend_file_url
 from onyx.server.query_and_chat.placement import Placement
+from onyx.server.query_and_chat.streaming_models import CustomToolDelta
+from onyx.server.query_and_chat.streaming_models import CustomToolStart
 from onyx.server.query_and_chat.streaming_models import GeneratedPdf
 from onyx.server.query_and_chat.streaming_models import Packet
 from onyx.server.query_and_chat.streaming_models import PdfGenerationFinal
-from onyx.server.query_and_chat.streaming_models import PdfGenerationToolStart
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolResponse
 from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
@@ -233,7 +234,10 @@ class PdfGenerationTool(Tool[None]):
         self.emitter.emit(
             Packet(
                 placement=placement,
-                obj=PdfGenerationToolStart(),
+                obj=CustomToolStart(
+                    tool_name=self.name,
+                    tool_id=self._id,
+                ),
             )
         )
 
@@ -391,6 +395,20 @@ class PdfGenerationTool(Tool[None]):
             Packet(
                 placement=placement,
                 obj=PdfGenerationFinal(pdf=generated_pdf),
+            )
+        )
+
+        # Emit CustomToolDelta with file_ids so the CustomToolRenderer
+        # shows a download button in the chat timeline.
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=CustomToolDelta(
+                    tool_name=self.name,
+                    tool_id=self._id,
+                    response_type="file",
+                    file_ids=[file_id],
+                ),
             )
         )
 

@@ -685,10 +685,28 @@ class NaarniFleetTool(Tool[None]):
             metrics: dict[str, Any] = v.get("metrics") or {}
             recent: dict[str, Any] = v.get("recentInfo") or {}
 
+            # Derive real-time movement status from live telemetry.
+            # The top-level `status` field is often stale and reports
+            # "NOT_MOVING" even for buses travelling at highway speed.
+            # Use groundSpeedKmph (most reliable) or vehicleStatus text
+            # as the authoritative source of truth.
+            speed: float | None = recent.get("groundSpeedKmph")
+            live_status: str | None = recent.get("vehicleStatus")
+            is_moving: bool
+            if speed is not None:
+                is_moving = speed > 0
+            elif live_status is not None:
+                is_moving = "moving" in live_status.lower()
+            else:
+                is_moving = False
+
             entry: dict[str, Any] = {
                 "vehicleId": vid,
                 "registrationNumber": v.get("registrationNumber"),
-                "operationalStatus": v.get("status"),
+                # Real-time movement (derived from live telemetry — more
+                # accurate than the top-level `status` field which lags)
+                "isMoving": is_moving,
+                "liveVehicleStatus": live_status,
                 "assignedRoute": route_name,
                 "assignedDepot": depot_name,
                 # Performance metrics (over the requested time range)
@@ -697,8 +715,7 @@ class NaarniFleetTool(Tool[None]):
                 "performanceStatus": metrics.get("performanceStatus"),
                 # Live / most-recent telemetry
                 "batterySOC_percent": recent.get("batSoc"),
-                "speedKmph": recent.get("groundSpeedKmph"),
-                "liveVehicleStatus": recent.get("vehicleStatus"),
+                "speedKmph": speed,
             }
             # Drop None values to reduce token usage
             entry = {k: val for k, val in entry.items() if val is not None}
