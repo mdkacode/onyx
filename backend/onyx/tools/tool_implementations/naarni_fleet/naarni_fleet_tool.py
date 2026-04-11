@@ -71,21 +71,25 @@ VALID_ACTIONS = [
 
 class NaarniFleetTool(Tool[None]):
     NAME = "naarni_fleet_data"
-    DESCRIPTION = (
+    _DESCRIPTION_TEMPLATE = (
         "Query live data from the Naarni EV bus fleet management system. "
         "Use this tool when the user asks about vehicles, buses, fleet status, "
         "routes, depots, mileage, kilometers run, battery state of charge (SoC), "
         "energy consumption, vehicle performance, alerts, warnings, "
         "or any operational fleet data.\n"
+        "TODAY'S DATE: {today}\n"
         "IMPORTANT GUIDELINES:\n"
+        "- ALWAYS compute and pass start_date / end_date from the user's "
+        "request. Examples: 'last week' → last 7 days, 'last month' → last "
+        "30 days, 'April 1 to 10' → those exact dates, 'yesterday' → "
+        "yesterday 00:00 to 23:59. For a single day use startDate "
+        "T00:00:00 and endDate T23:59:59. If no period is mentioned, "
+        "default to the last 7 days.\n"
         "- If the user asks about a specific route by name (e.g. 'Delhi to "
         "Dehradun'), first call list_routes to find the route ID, then use "
         "that ID in get_performance with route_ids.\n"
         "- If the user asks about a specific bus by registration number, first "
         "call filter_vehicles or list_vehicles to find the vehicle ID.\n"
-        "- For performance/mileage/energy queries, ALWAYS provide start_date "
-        "and end_date. If the user says 'last month' compute the dates. "
-        "If no period is mentioned, use the last 7 days.\n"
         "- For energy data, pass select_fields: ['ENERGY_CONSUMED', "
         "'ENERGY_REGENERATED'].\n"
         "- Use group_by='ROUTE' for route comparisons, 'VEHICLE' for per-bus "
@@ -165,7 +169,8 @@ class NaarniFleetTool(Tool[None]):
 
     @property
     def description(self) -> str:
-        return self.DESCRIPTION
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return self._DESCRIPTION_TEMPLATE.format(today=today)
 
     @property
     def display_name(self) -> str:
@@ -176,6 +181,49 @@ class NaarniFleetTool(Tool[None]):
     def is_available(cls, db_session: Session) -> bool:
         """Available when the Naarni API base URL is configured."""
         return bool(os.environ.get("NAARNI_API_BASE_URL"))
+
+    def _build_params_description(self) -> str:
+        """Build the params description with today's date for examples."""
+        today = datetime.now(timezone.utc)
+        today_str = today.strftime("%Y-%m-%d")
+        week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        month_ago = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+        return (
+            f"Parameters depending on the action. Today is {today_str}.\n\n"
+            "DATE RANGE (CRITICAL — you MUST compute and pass these for "
+            "performance / activity / analytics queries):\n"
+            f"- start_date (string): ISO datetime. "
+            f"'last week' → '{week_ago}T00:00:00', "
+            f"'last month' → '{month_ago}T00:00:00', "
+            f"'yesterday' → use yesterday's date + T00:00:00, "
+            f"specific date → that date + T00:00:00.\n"
+            f"- end_date (string): ISO datetime. Usually '{today_str}T23:59:59' "
+            f"for 'last week/month', or specific date + T23:59:59 for a "
+            f"single day or range end.\n\n"
+            "FILTERS:\n"
+            "- vehicle_id (int): single vehicle for get_vehicle_details\n"
+            "- vehicle_ids (int[]): filter by specific vehicle IDs\n"
+            "- route_ids (int[]): filter by route IDs "
+            "(use list_routes first to find IDs by name)\n"
+            "- depot_ids (int[]): filter by depot IDs\n"
+            "- fleet_id (int): filter by fleet\n\n"
+            "GROUPING (for get_performance / get_vehicle_activity):\n"
+            "- group_by (string): 'VEHICLE', 'ROUTE', 'DEPOT', or 'TIME'\n"
+            "- time_granularity (string): 'DAY', 'WEEK', or 'MONTH' "
+            "(required when group_by=TIME)\n"
+            "- select_fields (string[]): extra metrics — "
+            "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'KMS_GOAL', "
+            "'ENERGY_IDLED', 'KILOMETERS_RUN_MTD'\n"
+            "- order_by (object[]): e.g. "
+            '[{"field": "KILOMETER_RUN", "direction": "DESC"}]\n\n'
+            "ALERTS:\n"
+            "- alert_status (string): 'TRIGGERED', 'RESOLVED'\n"
+            "- criticality (string): 'CRITICAL', 'WARNING'\n"
+            "- category (string): 'AC', 'MOST_IMP', 'CHARGING_BATTERY'\n\n"
+            "PAGINATION:\n"
+            "- page (int): page number, default 0\n"
+            "- size (int): page size, default 20"
+        )
 
     def tool_definition(self) -> dict:
         return {
@@ -208,37 +256,7 @@ class NaarniFleetTool(Tool[None]):
                         },
                         PARAMS_FIELD: {
                             "type": "object",
-                            "description": (
-                                "Parameters depending on the action.\n\n"
-                                "DATE RANGE (CRITICAL for performance/activity/analytics):\n"
-                                "- start_date (string): ISO date e.g. '2026-03-01T00:00:00'. "
-                                "ALWAYS set this for performance queries.\n"
-                                "- end_date (string): ISO date e.g. '2026-03-31T23:59:59'. "
-                                "ALWAYS set this for performance queries.\n\n"
-                                "FILTERS:\n"
-                                "- vehicle_id (int): single vehicle for get_vehicle_details\n"
-                                "- vehicle_ids (int[]): filter by specific vehicle IDs\n"
-                                "- route_ids (int[]): filter by route IDs "
-                                "(use list_routes first to find IDs by name)\n"
-                                "- depot_ids (int[]): filter by depot IDs\n"
-                                "- fleet_id (int): filter by fleet\n\n"
-                                "GROUPING (for get_performance / get_vehicle_activity):\n"
-                                "- group_by (string): 'VEHICLE', 'ROUTE', 'DEPOT', or 'TIME'\n"
-                                "- time_granularity (string): 'DAY', 'WEEK', or 'MONTH' "
-                                "(required when group_by=TIME)\n"
-                                "- select_fields (string[]): extra metrics — "
-                                "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'KMS_GOAL', "
-                                "'ENERGY_IDLED', 'KILOMETERS_RUN_MTD'\n"
-                                "- order_by (object[]): e.g. "
-                                '[{"field": "KILOMETER_RUN", "direction": "DESC"}]\n\n'
-                                "ALERTS:\n"
-                                "- alert_status (string): 'TRIGGERED', 'RESOLVED'\n"
-                                "- criticality (string): 'CRITICAL', 'WARNING'\n"
-                                "- category (string): 'AC', 'MOST_IMP', 'CHARGING_BATTERY'\n\n"
-                                "PAGINATION:\n"
-                                "- page (int): page number, default 0\n"
-                                "- size (int): page size, default 20"
-                            ),
+                            "description": self._build_params_description(),
                         },
                     },
                     "required": [ACTION_FIELD],
