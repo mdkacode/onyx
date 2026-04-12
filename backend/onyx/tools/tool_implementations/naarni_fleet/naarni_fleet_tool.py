@@ -864,8 +864,24 @@ class NaarniFleetTool(Tool[None]):
         return self._api_get("/api/v1/routes")
 
     def _get_performance(self, params: dict[str, Any]) -> Any:
-        """POST /api/v1/analytics/performance"""
+        """POST /api/v1/analytics/performance
+
+        Smart defaults:
+          - If no group_by is set at all (even after _inject_resolved_ids),
+            default to 'ROUTE' — a per-route breakdown is almost always more
+            useful to the user than a single fleet-aggregate number.
+          - The LLM frequently sends params={} and expects meaningful data.
+            A route breakdown gives the LLM per-route context to answer
+            questions like "compare routes" or "which route has best mileage".
+        """
         params = self._inject_resolved_ids(params)
+
+        # If no group_by was set (not by LLM, not by auto-inject), default
+        # to ROUTE so the LLM always gets a per-route breakdown.
+        if "group_by" not in params:
+            params["group_by"] = "ROUTE"
+            logger.info("Default group_by=ROUTE (no group_by specified by LLM)")
+
         default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
@@ -887,12 +903,20 @@ class NaarniFleetTool(Tool[None]):
             body["routeIds"] = params["route_ids"]
         if "depot_ids" in params:
             body["depotIds"] = params["depot_ids"]
+
+        logger.info("Performance API body: %s", body)
         result = self._api_post("/api/v1/analytics/performance", body)
         return self._format_performance_response(result)
 
     def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/vehicle-activity"""
         params = self._inject_resolved_ids(params)
+
+        # Default to ROUTE grouping like _get_performance
+        if "group_by" not in params:
+            params["group_by"] = "ROUTE"
+            logger.info("Default group_by=ROUTE for vehicle-activity")
+
         default_range = self._default_time_range()
         body: dict[str, Any] = {
             "timeRange": {
