@@ -752,7 +752,12 @@ class NaarniFleetTool(Tool[None]):
 
     def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
         """Auto-resolve route_name → route_ids, vehicle_registration → vehicle_ids,
-        and normalize timestamps.
+        normalize timestamps, and auto-set group_by when filters are present.
+
+        The LLM frequently forgets to set group_by even when filtering by route
+        or vehicle. Without group_by the API returns fleet-aggregate data which
+        the LLM then wrongly attributes to the filtered route/vehicle. This
+        auto-detection prevents that class of errors entirely.
 
         Mutates and returns params with the resolved IDs injected.
         """
@@ -764,7 +769,24 @@ class NaarniFleetTool(Tool[None]):
         if resolved_vehicles is not None:
             params["vehicle_ids"] = resolved_vehicles
 
-        # Normalize timestamps to include milliseconds
+        # Auto-set group_by when the LLM forgets:
+        # - route_ids present but no group_by → group_by='ROUTE'
+        # - vehicle_ids present but no group_by → group_by='VEHICLE'
+        if "group_by" not in params:
+            if "route_ids" in params:
+                params["group_by"] = "ROUTE"
+                logger.info(
+                    "Auto-set group_by=ROUTE (route_ids=%s present)",
+                    params["route_ids"],
+                )
+            elif "vehicle_ids" in params:
+                params["group_by"] = "VEHICLE"
+                logger.info(
+                    "Auto-set group_by=VEHICLE (vehicle_ids=%s present)",
+                    params["vehicle_ids"],
+                )
+
+        # Normalize timestamps (strip milliseconds)
         if "start_date" in params:
             params["start_date"] = self._normalize_timestamp(
                 params["start_date"], is_end=False
@@ -1312,6 +1334,13 @@ class NaarniFleetTool(Tool[None]):
     ) -> ToolResponse:
         action = cast(str, llm_kwargs.get(ACTION_FIELD, ""))
         params = cast(dict[str, Any], llm_kwargs.get(PARAMS_FIELD, {}))
+
+        # Log what the LLM actually sent so we can debug misuse
+        logger.info(
+            "NaarniFleetTool invoked: action=%r params=%s",
+            action,
+            json.dumps(params, default=str),
+        )
 
         if action not in VALID_ACTIONS:
             raise ToolCallException(
