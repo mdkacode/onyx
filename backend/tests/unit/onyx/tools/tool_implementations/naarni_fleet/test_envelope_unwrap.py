@@ -618,43 +618,37 @@ def test_resolve_route_ids_from_route_name() -> None:
 # ─── _normalize_timestamp ────────────────────────────────────────────────
 
 
-def test_normalize_timestamp_adds_millis_to_start() -> None:
-    """Start timestamps without millis get .000 appended."""
+def test_normalize_timestamp_passthrough_valid() -> None:
+    """Valid timestamps without millis pass through unchanged."""
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-01T00:00:00")
-        == "2026-04-01T00:00:00.000"
+        == "2026-04-01T00:00:00"
     )
 
 
-def test_normalize_timestamp_adds_millis_to_end() -> None:
-    """End timestamps without millis get .999 appended."""
+def test_normalize_timestamp_strips_millis() -> None:
+    """Milliseconds must be stripped — Naarni API rejects them."""
     assert (
-        NaarniFleetTool._normalize_timestamp("2026-04-10T23:59:59", is_end=True)
-        == "2026-04-10T23:59:59.999"
+        NaarniFleetTool._normalize_timestamp("2026-04-01T00:00:00.000")
+        == "2026-04-01T00:00:00"
+    )
+    assert (
+        NaarniFleetTool._normalize_timestamp("2026-04-10T23:59:59.999", is_end=True)
+        == "2026-04-10T23:59:59"
     )
 
 
 def test_normalize_timestamp_date_only_start() -> None:
-    """Bare date for start → add T00:00:00.000."""
-    assert (
-        NaarniFleetTool._normalize_timestamp("2026-04-05") == "2026-04-05T00:00:00.000"
-    )
+    """Bare date for start → add T00:00:00."""
+    assert NaarniFleetTool._normalize_timestamp("2026-04-05") == "2026-04-05T00:00:00"
 
 
 def test_normalize_timestamp_date_only_end() -> None:
-    """Bare date for end → add T23:59:59.999."""
+    """Bare date for end → add T23:59:59."""
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-05", is_end=True)
-        == "2026-04-05T23:59:59.999"
+        == "2026-04-05T23:59:59"
     )
-
-
-def test_normalize_timestamp_already_has_millis() -> None:
-    """Timestamps that already have milliseconds pass through unchanged."""
-    ts = "2026-04-01T00:00:00.000"
-    assert NaarniFleetTool._normalize_timestamp(ts) == ts
-    ts_end = "2026-04-10T23:59:59.999"
-    assert NaarniFleetTool._normalize_timestamp(ts_end, is_end=True) == ts_end
 
 
 def test_normalize_timestamp_empty_string() -> None:

@@ -108,9 +108,9 @@ class NaarniFleetTool(Tool[None]):
         "- 'last week' → last 7 days\n"
         "- 'last month' → last 30 days\n"
         "- 'April 1 to 10' → those exact dates\n"
-        "- 'yesterday' → yesterday 00:00:00.000 to 23:59:59.999\n"
+        "- 'yesterday' → yesterday 00:00:00 to 23:59:59\n"
         "- No period mentioned → default to the last 7 days\n"
-        "Format: YYYY-MM-DDTHH:mm:ss.SSS (e.g. 2026-04-01T00:00:00.000)\n\n"
+        "Format: YYYY-MM-DDTHH:mm:ss (e.g. 2026-04-01T00:00:00)\n\n"
         "═══ AUTO-RESOLUTION ═══\n"
         "- Pass route_name (e.g. 'Delhi Dehradun') and the tool "
         "auto-resolves to route_ids. No need to call list_routes first.\n"
@@ -223,15 +223,15 @@ class NaarniFleetTool(Tool[None]):
             f"Parameters depending on the action. Today is {today_str}.\n\n"
             "DATE RANGE (CRITICAL — you MUST compute and pass these for "
             "performance / activity / analytics queries):\n"
-            f"- start_date (string): Format YYYY-MM-DDTHH:mm:ss.SSS\n"
-            f"  'last week' → '{week_ago}T00:00:00.000'\n"
-            f"  'last month' → '{month_ago}T00:00:00.000'\n"
-            f"  'yesterday' → '{yesterday}T00:00:00.000'\n"
-            f"  'April 5' → '2026-04-05T00:00:00.000'\n"
-            f"- end_date (string): Format YYYY-MM-DDTHH:mm:ss.SSS\n"
-            f"  'last week/month' → '{today_str}T23:59:59.999'\n"
-            f"  'yesterday' → '{yesterday}T23:59:59.999'\n"
-            f"  'April 10' → '2026-04-10T23:59:59.999'\n\n"
+            f"- start_date (string): Format YYYY-MM-DDTHH:mm:ss\n"
+            f"  'last week' → '{week_ago}T00:00:00'\n"
+            f"  'last month' → '{month_ago}T00:00:00'\n"
+            f"  'yesterday' → '{yesterday}T00:00:00'\n"
+            f"  'April 5' → '2026-04-05T00:00:00'\n"
+            f"- end_date (string): Format YYYY-MM-DDTHH:mm:ss\n"
+            f"  'last week/month' → '{today_str}T23:59:59'\n"
+            f"  'yesterday' → '{yesterday}T23:59:59'\n"
+            f"  'April 10' → '2026-04-10T23:59:59'\n\n"
             "FILTERS (name-based — auto-resolved to IDs):\n"
             "- route_name (string): route name e.g. 'Dehradun', "
             "'Gurgaon to Amritsar' — auto-resolved to route_ids\n"
@@ -575,6 +575,20 @@ class NaarniFleetTool(Tool[None]):
         self._api_calls.append(call_log)
         logger.info("Naarni API response: %s %s -> %d", method, path, resp.status_code)
 
+        # Log response body on errors for easier debugging
+        if resp.status_code >= 400:
+            try:
+                error_body = resp.text[:500]
+            except Exception:
+                error_body = "(unreadable)"
+            logger.error(
+                "Naarni API error body: %s %s -> %d: %s",
+                method,
+                path,
+                resp.status_code,
+                error_body,
+            )
+
         resp.raise_for_status()
         return self._sanitize_response(self._unwrap_envelope(resp.json()))
 
@@ -600,13 +614,13 @@ class NaarniFleetTool(Tool[None]):
         always gets meaningful aggregate data when the user doesn't specify
         an explicit date range.
 
-        Format follows the Naarni OpenAPI LocalDateTimeRange spec:
-        YYYY-MM-DDTHH:mm:SS.SSS (with milliseconds).
+        Format: YYYY-MM-DDTHH:mm:ss (no milliseconds — the Naarni
+        Java backend uses LocalDateTime which rejects .SSS suffixes).
         """
         now = datetime.now(timezone.utc)
         end = now.strftime("%Y-%m-%d")
         start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-        return {"start": f"{start}T00:00:00.000", "end": f"{end}T23:59:59.999"}
+        return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
 
     # ── Name → ID resolution ────────────────────────────────────────────────
     #
@@ -717,22 +731,22 @@ class NaarniFleetTool(Tool[None]):
 
     @staticmethod
     def _normalize_timestamp(ts: str, is_end: bool = False) -> str:
-        """Ensure timestamp has milliseconds for Naarni API compatibility.
+        """Normalize timestamp to YYYY-MM-DDTHH:mm:ss for Naarni API.
 
-        The OpenAPI spec requires YYYY-MM-DDTHH:mm:SS.SSS format.
-        The LLM may send timestamps without milliseconds — we add them.
-        Also handles the case where the LLM sends just a date (YYYY-MM-DD).
+        The Naarni Java backend uses LocalDateTime and rejects
+        millisecond suffixes (.SSS).  This helper:
+          - Expands bare dates (YYYY-MM-DD) to full datetime
+          - Strips milliseconds if the LLM included them
         """
         if not ts:
             return ts
         # If it's just a date like "2026-04-05", add time
         if len(ts) == 10 and "T" not in ts:
-            suffix = "T23:59:59.999" if is_end else "T00:00:00.000"
+            suffix = "T23:59:59" if is_end else "T00:00:00"
             return ts + suffix
-        # If it has T but no milliseconds, add them
-        if "T" in ts and "." not in ts:
-            suffix = ".999" if is_end else ".000"
-            return ts + suffix
+        # Strip milliseconds if present (e.g. ".000" or ".999")
+        if "." in ts:
+            ts = ts.split(".")[0]
         return ts
 
     def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
