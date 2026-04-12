@@ -98,8 +98,8 @@ class NaarniFleetTool(Tool[None]):
         "group_by='TIME' and time_granularity='DAY' or 'WEEK'\n"
         "• VEHICLE ACTIVITY (active/inactive counts, uptime) → "
         "action='get_vehicle_activity'\n"
-        "• LIVE VEHICLE STATUS (SOC, speed, location, is-moving) → "
-        "action='get_vehicle_analytics'\n"
+        "• LIVE VEHICLE STATUS (SOC, speed, odometer, location, "
+        "is-moving, AC status) → action='get_vehicle_analytics'\n"
         "• LIST ALL ROUTES/VEHICLES/FLEETS → action='list_routes' / "
         "'list_vehicles' / 'list_fleets'\n"
         "• ALERTS → action='list_alerts'\n\n"
@@ -286,7 +286,8 @@ class NaarniFleetTool(Tool[None]):
                                 "uptime, inactivity aging. Pass start_date/"
                                 "end_date.\n"
                                 "- get_vehicle_analytics: LIVE status — SOC, "
-                                "speed, is-moving, with route/depot assignment\n"
+                                "speed, odometer reading, GPS location, AC "
+                                "status, with route/depot assignment + MTD km\n"
                                 "- list_vehicles: list all vehicles with status\n"
                                 "- get_vehicle_details: one vehicle by ID\n"
                                 "- filter_vehicles: filter by operator/route/"
@@ -1205,6 +1206,9 @@ class NaarniFleetTool(Tool[None]):
             entry: dict[str, Any] = {
                 "vehicleId": vid,
                 "registrationNumber": v.get("registrationNumber"),
+                "make": v.get("make"),
+                "model": v.get("model"),
+                "year": v.get("year"),
                 # Real-time movement (derived from live telemetry — more
                 # accurate than the top-level `status` field which lags)
                 "isMoving": is_moving,
@@ -1214,10 +1218,17 @@ class NaarniFleetTool(Tool[None]):
                 # Performance metrics (over the requested time range)
                 "averageMileage_kmPerKwh": metrics.get("averageMileage"),
                 "kilometerRun": metrics.get("kilometerRun"),
+                "averageKilometerRun": metrics.get("averageKilometerRun"),
+                "kilometersRunMtd": metrics.get("kilometersRunMtd"),
+                "kilometersRunGoal": metrics.get("kilometersRunGoal"),
                 "performanceStatus": metrics.get("performanceStatus"),
-                # Live / most-recent telemetry
+                # Live / most-recent telemetry from recentInfo
                 "batterySOC_percent": recent.get("batSoc"),
                 "speedKmph": speed,
+                "odometerReading": recent.get("odometerReading"),
+                "latitude": recent.get("latitude"),
+                "longitude": recent.get("longitude"),
+                "acStatus": recent.get("acStatus"),
             }
             # Drop None values to reduce token usage
             entry = {k: val for k, val in entry.items() if val is not None}
@@ -1226,12 +1237,32 @@ class NaarniFleetTool(Tool[None]):
         return {
             "totalVehicles": len(enriched),
             "routes": [
-                {"id": r.get("id"), "name": r.get("name")}
+                {
+                    k: v
+                    for k, v in {
+                        "id": r.get("id"),
+                        "name": r.get("name"),
+                        "startCity": r.get("startCityName"),
+                        "endCity": r.get("endCityName"),
+                        "distance": r.get("distance"),
+                        "routeType": r.get("routeType"),
+                    }.items()
+                    if v is not None
+                }
                 for r in data.get("routes", [])
                 if isinstance(r, dict)
             ],
             "depots": [
-                {"id": d.get("id"), "name": d.get("name")}
+                {
+                    k: v
+                    for k, v in {
+                        "id": d.get("id"),
+                        "name": d.get("name"),
+                        "latitude": d.get("latitude"),
+                        "longitude": d.get("longitude"),
+                    }.items()
+                    if v is not None
+                }
                 for d in data.get("depots", [])
                 if isinstance(d, dict)
             ],

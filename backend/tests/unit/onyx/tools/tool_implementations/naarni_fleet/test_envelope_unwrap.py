@@ -180,24 +180,43 @@ def test_unwrap_does_not_unwrap_if_missing_status_code() -> None:
 # Real-world sample (condensed) matching the actual analytics-service response.
 _REAL_ANALYTICS_RESPONSE = {
     "routes": [
-        {"id": 2, "name": "Gurgaon to Dehradun"},
+        {
+            "id": 2,
+            "name": "Gurgaon to Dehradun",
+            "startCityName": "Gurgaon",
+            "endCityName": "Dehradun",
+            "distance": None,
+            "routeType": "TO_FRO",
+        },
         {"id": 34, "name": "Gurgaon to Amritsar"},
     ],
-    "depots": [{"id": 93, "name": "Gurgaon"}],
+    "depots": [
+        {"id": 93, "name": "Gurgaon", "latitude": 28.4595, "longitude": 77.0266}
+    ],
     "vehicles": [
         {
             "id": 21,
             "registrationNumber": "HR55AY9237",
+            "make": "AZAD",
+            "model": "A_12.5_M",
+            "year": 2025,
             "status": "NOT_MOVING",
             "metrics": {
                 "averageMileage": 0.726,
                 "kilometerRun": 5895.0,
+                "averageKilometerRun": 594.93,
+                "kilometersRunMtd": 6786.38,
+                "kilometersRunGoal": 3500.0,
                 "performanceStatus": "GREAT",
             },
             "recentInfo": {
                 "batSoc": 70.8,
                 "groundSpeedKmph": 0.0,
                 "vehicleStatus": "Idling AC OFF",
+                "odometerReading": 144440.38,
+                "latitude": 29.31924,
+                "longitude": 77.72449,
+                "acStatus": "Start",
             },
         },
         {
@@ -234,16 +253,27 @@ def test_format_vehicle_analytics_denormalizes_route_and_depot() -> None:
 
     v21 = vehicles_by_id[21]
     assert v21["registrationNumber"] == "HR55AY9237"
+    assert v21["make"] == "AZAD"
+    assert v21["model"] == "A_12.5_M"
+    assert v21["year"] == 2025
     assert v21["assignedRoute"] == "Gurgaon to Dehradun"
     assert v21["assignedDepot"] == "Gurgaon"
     # isMoving is derived from real-time groundSpeedKmph (0.0 → not moving)
     assert v21["isMoving"] is False
     assert v21["averageMileage_kmPerKwh"] == 0.726
     assert v21["kilometerRun"] == 5895.0
+    assert v21["averageKilometerRun"] == 594.93
+    assert v21["kilometersRunMtd"] == 6786.38
+    assert v21["kilometersRunGoal"] == 3500.0
     assert v21["performanceStatus"] == "GREAT"
     assert v21["batterySOC_percent"] == 70.8
     assert v21["speedKmph"] == 0.0
     assert v21["liveVehicleStatus"] == "Idling AC OFF"
+    # New fields from recentInfo
+    assert v21["odometerReading"] == 144440.38
+    assert v21["latitude"] == 29.31924
+    assert v21["longitude"] == 77.72449
+    assert v21["acStatus"] == "Start"
 
     # Vehicle 34 is on route 2 (Gurgaon to Dehradun), NOT route 34.
     # This cross-reference is the key correctness check.
@@ -253,18 +283,29 @@ def test_format_vehicle_analytics_denormalizes_route_and_depot() -> None:
     assert v34["speedKmph"] == 62.5
     # isMoving=True because groundSpeedKmph=62.5 > 0
     assert v34["isMoving"] is True
+    # v34 has no odometerReading in recentInfo — should be absent
+    assert "odometerReading" not in v34
 
 
 def test_format_vehicle_analytics_returns_route_and_depot_lists() -> None:
-    """Top-level routes/depots lists should be preserved for context."""
+    """Top-level routes/depots lists should include city names and coords."""
     result = NaarniFleetTool._format_vehicle_analytics_response(
         _REAL_ANALYTICS_RESPONSE
     )
     route_names = [r["name"] for r in result["routes"]]
     assert "Gurgaon to Dehradun" in route_names
     assert "Gurgaon to Amritsar" in route_names
-    depot_names = [d["name"] for d in result["depots"]]
-    assert "Gurgaon" in depot_names
+    # Route should include city names and type
+    dehradun_route = next(r for r in result["routes"] if r["id"] == 2)
+    assert dehradun_route["startCity"] == "Gurgaon"
+    assert dehradun_route["endCity"] == "Dehradun"
+    assert dehradun_route["routeType"] == "TO_FRO"
+    assert "distance" not in dehradun_route  # None values are stripped
+    # Depot should include coordinates
+    depot = result["depots"][0]
+    assert depot["name"] == "Gurgaon"
+    assert depot["latitude"] == 28.4595
+    assert depot["longitude"] == 77.0266
 
 
 def test_format_vehicle_analytics_drops_none_values() -> None:
