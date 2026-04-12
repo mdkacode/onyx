@@ -76,24 +76,51 @@ class NaarniFleetTool(Tool[None]):
         "Use this tool when the user asks about vehicles, buses, fleet status, "
         "routes, depots, mileage, kilometers run, battery state of charge (SoC), "
         "energy consumption, vehicle performance, alerts, warnings, "
-        "or any operational fleet data.\n"
-        "TODAY'S DATE: {today}\n"
-        "IMPORTANT GUIDELINES:\n"
-        "- ALWAYS compute and pass start_date / end_date from the user's "
-        "request. Examples: 'last week' → last 7 days, 'last month' → last "
-        "30 days, 'April 1 to 10' → those exact dates, 'yesterday' → "
-        "yesterday 00:00 to 23:59. For a single day use startDate "
-        "T00:00:00 and endDate T23:59:59. If no period is mentioned, "
-        "default to the last 7 days.\n"
-        "- If the user mentions a route by name (e.g. 'Delhi to Dehradun', "
-        "'Gurgaon Amritsar trip'), pass route_name and the tool will "
-        "auto-resolve it to route_ids. No need to call list_routes first.\n"
-        "- If the user mentions a bus by registration (e.g. 'HR55AY7626'), "
-        "pass vehicle_registration and the tool will auto-resolve it.\n"
-        "- For energy data, pass select_fields: ['ENERGY_CONSUMED', "
-        "'ENERGY_REGENERATED'].\n"
-        "- Use group_by='ROUTE' for route comparisons, 'VEHICLE' for per-bus "
-        "breakdown, 'TIME' with time_granularity='DAY' for daily trends."
+        "or any operational fleet data.\n\n"
+        "TODAY'S DATE: {today}\n\n"
+        "═══ DECISION TREE — pick the right action ═══\n"
+        "• FLEET-LEVEL (overall fleet summary, total vehicles, counts) → "
+        "action='get_dashboard'\n"
+        "• FLEET PERFORMANCE (overall mileage, km, energy across ALL vehicles) → "
+        "action='get_performance' with NO vehicle_ids/route_ids filters\n"
+        "• ROUTE-LEVEL (mileage/km/energy for a specific route like 'Delhi "
+        "to Dehradun') → action='get_performance' with route_name='Delhi "
+        "Dehradun' and group_by='ROUTE'\n"
+        "• COMPARE ALL ROUTES → action='get_performance' with "
+        "group_by='ROUTE' (no route_name filter)\n"
+        "• VEHICLE-LEVEL (mileage/km/energy for a specific bus like "
+        "'HR55AY7626') → action='get_performance' with "
+        "vehicle_registration='HR55AY7626' and group_by='VEHICLE'\n"
+        "• COMPARE ALL VEHICLES → action='get_performance' with "
+        "group_by='VEHICLE' (no vehicle filter)\n"
+        "• DEPOT-LEVEL → action='get_performance' with group_by='DEPOT'\n"
+        "• DAILY/WEEKLY TREND → action='get_performance' with "
+        "group_by='TIME' and time_granularity='DAY' or 'WEEK'\n"
+        "• VEHICLE ACTIVITY (active/inactive counts, uptime) → "
+        "action='get_vehicle_activity'\n"
+        "• LIVE VEHICLE STATUS (SOC, speed, location, is-moving) → "
+        "action='get_vehicle_analytics'\n"
+        "• LIST ALL ROUTES/VEHICLES/FLEETS → action='list_routes' / "
+        "'list_vehicles' / 'list_fleets'\n"
+        "• ALERTS → action='list_alerts'\n\n"
+        "═══ DATE RANGE (CRITICAL) ═══\n"
+        "ALWAYS compute and pass start_date / end_date:\n"
+        "- 'last week' → last 7 days\n"
+        "- 'last month' → last 30 days\n"
+        "- 'April 1 to 10' → those exact dates\n"
+        "- 'yesterday' → yesterday 00:00:00.000 to 23:59:59.999\n"
+        "- No period mentioned → default to the last 7 days\n"
+        "Format: YYYY-MM-DDTHH:mm:ss.SSS (e.g. 2026-04-01T00:00:00.000)\n\n"
+        "═══ AUTO-RESOLUTION ═══\n"
+        "- Pass route_name (e.g. 'Delhi Dehradun') and the tool "
+        "auto-resolves to route_ids. No need to call list_routes first.\n"
+        "- Pass vehicle_registration (e.g. 'HR55AY7626') and the tool "
+        "auto-resolves to vehicle_ids.\n\n"
+        "═══ EXTRA METRICS ═══\n"
+        "Pass select_fields to request additional data beyond the defaults:\n"
+        "- Energy: ['ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'ENERGY_IDLED']\n"
+        "- KM tracking: ['KILOMETERS_RUN_MTD', 'KMS_GOAL']\n"
+        "- Idling: ['IDLING_TIME']"
     )
     DISPLAY_NAME = "Fleet Data"
 
@@ -191,18 +218,20 @@ class NaarniFleetTool(Tool[None]):
         today_str = today.strftime("%Y-%m-%d")
         week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
         month_ago = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         return (
             f"Parameters depending on the action. Today is {today_str}.\n\n"
             "DATE RANGE (CRITICAL — you MUST compute and pass these for "
             "performance / activity / analytics queries):\n"
-            f"- start_date (string): ISO datetime. "
-            f"'last week' → '{week_ago}T00:00:00', "
-            f"'last month' → '{month_ago}T00:00:00', "
-            f"'yesterday' → use yesterday's date + T00:00:00, "
-            f"specific date → that date + T00:00:00.\n"
-            f"- end_date (string): ISO datetime. Usually '{today_str}T23:59:59' "
-            f"for 'last week/month', or specific date + T23:59:59 for a "
-            f"single day or range end.\n\n"
+            f"- start_date (string): Format YYYY-MM-DDTHH:mm:ss.SSS\n"
+            f"  'last week' → '{week_ago}T00:00:00.000'\n"
+            f"  'last month' → '{month_ago}T00:00:00.000'\n"
+            f"  'yesterday' → '{yesterday}T00:00:00.000'\n"
+            f"  'April 5' → '2026-04-05T00:00:00.000'\n"
+            f"- end_date (string): Format YYYY-MM-DDTHH:mm:ss.SSS\n"
+            f"  'last week/month' → '{today_str}T23:59:59.999'\n"
+            f"  'yesterday' → '{yesterday}T23:59:59.999'\n"
+            f"  'April 10' → '2026-04-10T23:59:59.999'\n\n"
             "FILTERS (name-based — auto-resolved to IDs):\n"
             "- route_name (string): route name e.g. 'Dehradun', "
             "'Gurgaon to Amritsar' — auto-resolved to route_ids\n"
@@ -216,11 +245,11 @@ class NaarniFleetTool(Tool[None]):
             "- fleet_id (int): filter by fleet\n\n"
             "GROUPING (for get_performance / get_vehicle_activity):\n"
             "- group_by (string): 'VEHICLE', 'ROUTE', 'DEPOT', or 'TIME'\n"
-            "- time_granularity (string): 'DAY', 'WEEK', or 'MONTH' "
+            "- time_granularity (string): 'HOUR', 'DAY', 'WEEK', or 'MONTH' "
             "(required when group_by=TIME)\n"
             "- select_fields (string[]): extra metrics — "
-            "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'KMS_GOAL', "
-            "'ENERGY_IDLED', 'KILOMETERS_RUN_MTD'\n"
+            "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'ENERGY_IDLED', "
+            "'KMS_GOAL', 'KILOMETERS_RUN_MTD', 'IDLING_TIME'\n"
             "- order_by (object[]): e.g. "
             '[{"field": "KILOMETER_RUN", "direction": "DESC"}]\n\n'
             "ALERTS:\n"
@@ -245,20 +274,27 @@ class NaarniFleetTool(Tool[None]):
                             "type": "string",
                             "enum": VALID_ACTIONS,
                             "description": (
-                                "The fleet data action to perform. Options:\n"
-                                "- get_dashboard: overall fleet summary (vehicle counts, devices)\n"
+                                "The fleet data action. See DECISION TREE in "
+                                "the tool description.\n"
+                                "- get_dashboard: fleet summary (vehicle counts, "
+                                "fleet-wide mileage/km totals)\n"
+                                "- get_performance: THE MAIN ANALYTICS ACTION — "
+                                "mileage, km run, energy for vehicles/routes/"
+                                "depots/fleet. Use group_by to control "
+                                "granularity. ALWAYS pass start_date/end_date.\n"
+                                "- get_vehicle_activity: active/inactive counts, "
+                                "uptime, inactivity aging. Pass start_date/"
+                                "end_date.\n"
+                                "- get_vehicle_analytics: LIVE status — SOC, "
+                                "speed, is-moving, with route/depot assignment\n"
                                 "- list_vehicles: list all vehicles with status\n"
-                                "- get_vehicle_details: detailed info for one vehicle by ID\n"
-                                "- filter_vehicles: filter vehicles by operator, route, device status\n"
-                                "- list_fleets: list all fleets\n"
-                                "- list_routes: list all routes\n"
-                                "- get_performance: performance metrics (mileage, km run, energy) "
-                                "optionally grouped by vehicle/route/depot/time\n"
-                                "- get_vehicle_activity: activity metrics (active/inactive counts, "
-                                "inactivity aging)\n"
-                                "- get_vehicle_analytics: combined vehicle analytics with route/depot mapping\n"
-                                "- list_alerts: list triggered alerts with optional filters\n"
-                                "- get_alert_definitions: list all alert rule definitions"
+                                "- get_vehicle_details: one vehicle by ID\n"
+                                "- filter_vehicles: filter by operator/route/"
+                                "device\n"
+                                "- list_fleets: all fleets\n"
+                                "- list_routes: all routes with distance\n"
+                                "- list_alerts: triggered alerts\n"
+                                "- get_alert_definitions: alert rule definitions"
                             ),
                         },
                         PARAMS_FIELD: {
@@ -563,11 +599,14 @@ class NaarniFleetTool(Tool[None]):
         window matches what the dashboard UI defaults to and ensures the LLM
         always gets meaningful aggregate data when the user doesn't specify
         an explicit date range.
+
+        Format follows the Naarni OpenAPI LocalDateTimeRange spec:
+        YYYY-MM-DDTHH:mm:SS.SSS (with milliseconds).
         """
         now = datetime.now(timezone.utc)
         end = now.strftime("%Y-%m-%d")
         start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-        return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
+        return {"start": f"{start}T00:00:00.000", "end": f"{end}T23:59:59.999"}
 
     # ── Name → ID resolution ────────────────────────────────────────────────
     #
@@ -676,8 +715,29 @@ class NaarniFleetTool(Tool[None]):
         )
         return None
 
+    @staticmethod
+    def _normalize_timestamp(ts: str, is_end: bool = False) -> str:
+        """Ensure timestamp has milliseconds for Naarni API compatibility.
+
+        The OpenAPI spec requires YYYY-MM-DDTHH:mm:SS.SSS format.
+        The LLM may send timestamps without milliseconds — we add them.
+        Also handles the case where the LLM sends just a date (YYYY-MM-DD).
+        """
+        if not ts:
+            return ts
+        # If it's just a date like "2026-04-05", add time
+        if len(ts) == 10 and "T" not in ts:
+            suffix = "T23:59:59.999" if is_end else "T00:00:00.000"
+            return ts + suffix
+        # If it has T but no milliseconds, add them
+        if "T" in ts and "." not in ts:
+            suffix = ".999" if is_end else ".000"
+            return ts + suffix
+        return ts
+
     def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Auto-resolve route_name → route_ids and vehicle_registration → vehicle_ids.
+        """Auto-resolve route_name → route_ids, vehicle_registration → vehicle_ids,
+        and normalize timestamps.
 
         Mutates and returns params with the resolved IDs injected.
         """
@@ -688,6 +748,16 @@ class NaarniFleetTool(Tool[None]):
         resolved_vehicles = self._resolve_vehicle_ids(params)
         if resolved_vehicles is not None:
             params["vehicle_ids"] = resolved_vehicles
+
+        # Normalize timestamps to include milliseconds
+        if "start_date" in params:
+            params["start_date"] = self._normalize_timestamp(
+                params["start_date"], is_end=False
+            )
+        if "end_date" in params:
+            params["end_date"] = self._normalize_timestamp(
+                params["end_date"], is_end=True
+            )
 
         return params
 

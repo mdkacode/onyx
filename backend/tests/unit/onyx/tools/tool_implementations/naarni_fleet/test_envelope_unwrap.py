@@ -613,3 +613,50 @@ def test_resolve_route_ids_from_route_name() -> None:
     params = {"route_ids": [99], "route_name": "Dehradun"}
     result = tool._resolve_route_ids(params)
     assert result == [99]
+
+
+# ─── _normalize_timestamp ────────────────────────────────────────────────
+
+
+def test_normalize_timestamp_adds_millis_to_start() -> None:
+    """Start timestamps without millis get .000 appended."""
+    assert (
+        NaarniFleetTool._normalize_timestamp("2026-04-01T00:00:00")
+        == "2026-04-01T00:00:00.000"
+    )
+
+
+def test_normalize_timestamp_adds_millis_to_end() -> None:
+    """End timestamps without millis get .999 appended."""
+    assert (
+        NaarniFleetTool._normalize_timestamp("2026-04-10T23:59:59", is_end=True)
+        == "2026-04-10T23:59:59.999"
+    )
+
+
+def test_normalize_timestamp_date_only_start() -> None:
+    """Bare date for start → add T00:00:00.000."""
+    assert (
+        NaarniFleetTool._normalize_timestamp("2026-04-05") == "2026-04-05T00:00:00.000"
+    )
+
+
+def test_normalize_timestamp_date_only_end() -> None:
+    """Bare date for end → add T23:59:59.999."""
+    assert (
+        NaarniFleetTool._normalize_timestamp("2026-04-05", is_end=True)
+        == "2026-04-05T23:59:59.999"
+    )
+
+
+def test_normalize_timestamp_already_has_millis() -> None:
+    """Timestamps that already have milliseconds pass through unchanged."""
+    ts = "2026-04-01T00:00:00.000"
+    assert NaarniFleetTool._normalize_timestamp(ts) == ts
+    ts_end = "2026-04-10T23:59:59.999"
+    assert NaarniFleetTool._normalize_timestamp(ts_end, is_end=True) == ts_end
+
+
+def test_normalize_timestamp_empty_string() -> None:
+    """Empty string passes through."""
+    assert NaarniFleetTool._normalize_timestamp("") == ""
