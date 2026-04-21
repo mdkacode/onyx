@@ -420,6 +420,7 @@ class PdfGenerationTool(Tool[None]):
             size_bytes=size_bytes,
         )
 
+        download_markdown = f"[\U0001f4c4 Download {title}]({file_url})"
         llm_facing_response = json.dumps(
             {
                 "file_id": file_id,
@@ -427,9 +428,12 @@ class PdfGenerationTool(Tool[None]):
                 "page_count": page_count,
                 "size_bytes": size_bytes,
                 "download_url": file_url,
+                "download_markdown": download_markdown,
                 "message": (
-                    f"Generated a {page_count}-page PDF titled "
-                    f"'{title}'. The file is ready for download."
+                    f"Generated a {page_count}-page PDF titled '{title}'. "
+                    f"You MUST include the following markdown link VERBATIM "
+                    f"(do not modify the URL, do not wrap in code blocks) "
+                    f"so the user can download the file: {download_markdown}"
                 ),
             }
         )
