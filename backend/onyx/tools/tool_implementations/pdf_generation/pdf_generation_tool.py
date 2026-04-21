@@ -18,6 +18,7 @@ from onyx.chat.emitter import Emitter
 from onyx.configs.constants import FileOrigin
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.utils import build_frontend_file_url
+from onyx.file_store.utils import build_full_frontend_file_url
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import CustomToolDelta
 from onyx.server.query_and_chat.streaming_models import CustomToolStart
@@ -420,20 +421,21 @@ class PdfGenerationTool(Tool[None]):
             size_bytes=size_bytes,
         )
 
-        download_markdown = f"[\U0001f4c4 Download {title}]({file_url})"
+        full_download_url = build_full_frontend_file_url(file_id)
         llm_facing_response = json.dumps(
             {
                 "file_id": file_id,
                 "title": title,
                 "page_count": page_count,
                 "size_bytes": size_bytes,
-                "download_url": file_url,
-                "download_markdown": download_markdown,
+                "download_url": full_download_url,
                 "message": (
                     f"Generated a {page_count}-page PDF titled '{title}'. "
-                    f"You MUST include the following markdown link VERBATIM "
-                    f"(do not modify the URL, do not wrap in code blocks) "
-                    f"so the user can download the file: {download_markdown}"
+                    f"In your reply to the user, you MUST print the following "
+                    f"full download URL as PLAIN TEXT on its own line (NOT as "
+                    f"a markdown link, NOT wrapped in backticks, NOT modified "
+                    f"in any way) so the user can copy and paste it into their "
+                    f"browser to download the file:\n\n{full_download_url}"
                 ),
             }
         )
