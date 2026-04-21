@@ -384,9 +384,10 @@ def test_format_performance_aggregate() -> None:
         ],
     }
     result = NaarniFleetTool._format_performance_response(raw)
-    assert result["energyConsumed"] == 21126.98
-    assert result["energyRegenerated"] == 4946.55
-    assert result["kilometerRun"] == 26844.12
+    # Unit-suffixed keys — the LLM reads these so it always knows the unit.
+    assert result["energyConsumed_kWh"] == 21126.98
+    assert result["energyRegenerated_kWh"] == 4946.55
+    assert result["kilometerRun_km"] == 26844.12
     assert "vehicles" not in result
     assert "timeGroups" not in result
 
@@ -432,12 +433,12 @@ def test_format_performance_by_time() -> None:
     assert len(result["daily"]) == 2
     day1 = result["daily"][0]
     assert day1["date"] == "2026-04-04"
-    assert day1["energyConsumed"] == 3169.02
-    assert day1["energyRegenerated"] == 715.14
+    assert day1["energyConsumed_kWh"] == 3169.02
+    assert day1["energyRegenerated_kWh"] == 715.14
     assert "timeGroup" not in day1  # epoch must be stripped
     day2 = result["daily"][1]
     assert day2["date"] == "2026-04-05"
-    assert day2["energyConsumed"] == 3057.99
+    assert day2["energyConsumed_kWh"] == 3057.99
 
 
 def test_format_performance_by_vehicle() -> None:
@@ -469,9 +470,9 @@ def test_format_performance_by_vehicle() -> None:
     v = result["vehicles"][0]
     assert v["vehicleId"] == 1
     assert v["registrationNumber"] == "HR55AY7626"
-    assert v["energyConsumed"] == 4146.71
-    assert v["energyRegenerated"] == 1048.36
-    assert v["kilometerRun"] == 4193.62
+    assert v["energyConsumed_kWh"] == 4146.71
+    assert v["energyRegenerated_kWh"] == 1048.36
+    assert v["kilometerRun_km"] == 4193.62
     # The nested metrics "id" field should be excluded
     assert "id" not in v
 
@@ -507,8 +508,8 @@ def test_format_performance_by_route() -> None:
     assert r["routeName"] == "Gurgaon to Amritsar"
     assert r["startCity"] == "Gurgaon"
     assert r["endCity"] == "Amritsar"
-    assert r["energyConsumed"] == 9701.69
-    assert r["energyRegenerated"] == 2203.75
+    assert r["energyConsumed_kWh"] == 9701.69
+    assert r["energyRegenerated_kWh"] == 2203.75
 
 
 def test_format_performance_by_depot() -> None:
@@ -538,7 +539,7 @@ def test_format_performance_by_depot() -> None:
     d = result["depots"][0]
     assert d["depotId"] == 93
     assert d["depotName"] == "Gurgaon"
-    assert d["energyConsumed"] == 21126.98
+    assert d["energyConsumed_kWh"] == 21126.98
 
 
 def test_format_performance_passthrough_non_dict() -> None:
@@ -578,7 +579,7 @@ def test_format_vehicle_activity_by_time() -> None:
     assert day["activeCount"] == 7
     assert day["inactiveCount"] == 1
     assert day["totalCount"] == 8
-    assert day["kmsRun"] == 3821.38
+    assert day["kmsRun_km"] == 3821.38
     assert "timeGroup" not in day
 
 

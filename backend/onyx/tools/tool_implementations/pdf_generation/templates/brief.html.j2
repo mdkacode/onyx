@@ -129,9 +129,49 @@ code {
     color: #888;
     text-align: center;
 }
+
+{# Watermark — position:fixed paints on every page in WeasyPrint. #}
+.watermark {
+    position: fixed;
+    top: -100%;
+    left: -100%;
+    right: -100%;
+    bottom: -100%;
+    width: 300%;
+    height: 300%;
+    transform: rotate(-30deg);
+    transform-origin: center center;
+    pointer-events: none;
+    z-index: -1;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: space-around;
+    justify-content: space-around;
+}
+
+.watermark-tile {
+    display: inline-block;
+    font-family: {{ brand.font_family }};
+    font-size: 24pt;
+    font-weight: 600;
+    letter-spacing: 2pt;
+    color: {{ brand.watermark_color }};
+    opacity: 0.06;
+    white-space: nowrap;
+    padding: 24pt 48pt;
+}
 </style>
 </head>
 <body>
+
+{% if brand.watermark_text %}
+<div class="watermark" aria-hidden="true">
+    {% for _ in range(48) %}
+    <span class="watermark-tile">{{ brand.watermark_text }}</span>
+    {% endfor %}
+</div>
+{% endif %}
 
 <div class="header-bar">
     {% if brand.logo_base64 %}

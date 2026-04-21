@@ -21,6 +21,14 @@ class BrandConfig(BaseModel):
     font_family: str = "Inter, DejaVu Sans, sans-serif"
     company_name: str | None = None
     logo_base64: str | None = None
+    # Watermark text stamped diagonally across every page. None disables the
+    # watermark entirely (e.g., for unauthenticated contexts where we can't
+    # resolve a user identity). Typical value: "NaArNi · <user-name>".
+    watermark_text: str | None = None
+    # Color of the watermark text. Kept very translucent at render time so
+    # any dark-ish color still prints as a "soft gray" tint. Accepts
+    # #RGB / #RRGGBB hex only (validated server-side).
+    watermark_color: str = "#172B4D"
 
 
 class DocMetadata(BaseModel):

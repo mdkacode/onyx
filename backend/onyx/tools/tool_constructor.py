@@ -289,6 +289,7 @@ def construct_tools(
                     PdfGenerationTool(
                         tool_id=db_tool_model.id,
                         emitter=emitter,
+                        user=user,
                     )
                 ]
 

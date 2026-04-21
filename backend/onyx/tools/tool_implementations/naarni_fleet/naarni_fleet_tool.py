@@ -31,6 +31,7 @@ from onyx.chat.emitter import Emitter
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.models import User
 from onyx.db.naarni_auth import get_naarni_token_for_user
+from onyx.server.features.naarni_auth.token_refresh import naarni_device_uuid
 from onyx.server.features.naarni_auth.token_refresh import NaarniRefreshFailed
 from onyx.server.features.naarni_auth.token_refresh import (
     refresh_user_naarni_token,
@@ -51,6 +52,7 @@ logger = setup_logger()
 
 ACTION_FIELD = "action"
 PARAMS_FIELD = "parameters"
+INTENT_FIELD = "intent"
 
 NAARNI_API_BASE_URL = os.environ.get("NAARNI_API_BASE_URL", "")
 
@@ -67,6 +69,28 @@ VALID_ACTIONS = [
     "list_alerts",
     "get_alert_definitions",
 ]
+
+# Product intents from training.md §3.3–3.4. When the LLM passes one of these,
+# the tool applies the exact payload rules the Naarni backend expects for that
+# screen/widget instead of letting the LLM guess groupBy/status/selectFields.
+VALID_INTENTS = [
+    "active_vehicles_count",
+    "inactive_vehicles",
+    "sla_uptime",
+    "kms_per_vehicle",
+    "energy_chart",
+    "kms_goal_chart",
+    "depot_dropdown",
+    "route_dropdown",
+]
+
+# UI period → timeGranularity (training.md §3.6)
+_UI_PERIOD_TO_GRANULARITY = {
+    "day": "DAY",
+    "week": "DAY",
+    "month": "WEEK",
+    "6m": "MONTH",
+}
 
 
 class NaarniFleetTool(Tool[None]):
@@ -120,7 +144,46 @@ class NaarniFleetTool(Tool[None]):
         "Pass select_fields to request additional data beyond the defaults:\n"
         "- Energy: ['ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'ENERGY_IDLED']\n"
         "- KM tracking: ['KILOMETERS_RUN_MTD', 'KMS_GOAL']\n"
-        "- Idling: ['IDLING_TIME']"
+        "- Idling: ['IDLING_TIME']\n\n"
+        "═══ PRODUCT INTENTS — pass intent=<name> to auto-apply payload rules ═══\n"
+        "The Naarni backend expects very specific payload shapes for each "
+        "screen/widget. Passing an 'intent' tells the tool which rules to "
+        "enforce deterministically — prefer this over hand-crafting the body:\n"
+        "• intent='active_vehicles_count' → active vehicles card "
+        "(timeRange=yesterday-only, no filters). Use when the user asks "
+        "'how many active/inactive vehicles'.\n"
+        "• intent='inactive_vehicles' → inactive vehicles table "
+        "(status=INACTIVE, groupBy=VEHICLE, last 6 months, ordered by "
+        "INACTIVITY_AGING ASC). Use for 'which buses are idle/down'.\n"
+        "• intent='sla_uptime' → SLA vehicle uptime list "
+        "(INACTIVITY_MTD + INACTIVITY_AGING, 6-month window).\n"
+        "• intent='kms_per_vehicle' → km-run per vehicle list "
+        "(groupBy=VEHICLE, empty depot/route filters stripped).\n"
+        "• intent='energy_chart' → vehicle energy timeseries "
+        "(ENERGY_CONSUMED/REGENERATED, groupBy=TIME, requires vehicle id).\n"
+        "• intent='kms_goal_chart' → vehicle KMS-goal timeseries "
+        "(status=ACTIVE, KMS_GOAL, groupBy=TIME, requires vehicle id).\n"
+        "• intent='depot_dropdown' → depot list for a filter dropdown "
+        "(groupBy=DEPOT, week-ending-yesterday default).\n"
+        "• intent='route_dropdown' → route list for a filter dropdown "
+        "(groupBy=ROUTE, week-ending-yesterday default).\n\n"
+        "═══ UI PERIOD MAPPING ═══\n"
+        "Pass ui_period='day'|'week'|'month'|'6m' and the tool maps to the "
+        "correct timeGranularity enum:\n"
+        "  day → DAY, week → DAY (7 daily bars), "
+        "month → WEEK (~4 bars), 6m → MONTH\n\n"
+        "═══ UNITS GUIDE (response fields carry explicit units) ═══\n"
+        "• averageMileage_kmPerKwh — km driven per kWh of energy "
+        "(HIGHER is better, typical 0.6–1.2)\n"
+        "• kilometerRun_km — distance driven in the selected period\n"
+        "• kilometersRunMtd_km — month-to-date distance\n"
+        "• kilometersRunGoal_km — target distance for the period\n"
+        "• energyConsumed_kWh / energyRegenerated_kWh / energyIdled_kWh\n"
+        "• batterySOC_percent — live state of charge (0–100)\n"
+        "• speedKmph — live ground speed\n"
+        "• idlingTime_seconds — engine-on, not-moving duration\n"
+        "DO NOT invent other units. If the field has no _unit suffix it is "
+        "dimensionless (counts, statuses, ids)."
     )
     DISPLAY_NAME = "Fleet Data"
 
@@ -247,11 +310,19 @@ class NaarniFleetTool(Tool[None]):
             "- group_by (string): 'VEHICLE', 'ROUTE', 'DEPOT', or 'TIME'\n"
             "- time_granularity (string): 'HOUR', 'DAY', 'WEEK', or 'MONTH' "
             "(required when group_by=TIME)\n"
+            "- ui_period (string): 'day' | 'week' | 'month' | '6m' — "
+            "preferred over time_granularity; auto-maps per §3.6\n"
+            "- intent (string): one of active_vehicles_count, "
+            "inactive_vehicles, sla_uptime, kms_per_vehicle, energy_chart, "
+            "kms_goal_chart, depot_dropdown, route_dropdown — applies the "
+            "training.md payload rules for that product screen\n"
             "- select_fields (string[]): extra metrics — "
             "'ENERGY_CONSUMED', 'ENERGY_REGENERATED', 'ENERGY_IDLED', "
-            "'KMS_GOAL', 'KILOMETERS_RUN_MTD', 'IDLING_TIME'\n"
+            "'KMS_GOAL', 'KILOMETERS_RUN_MTD', 'IDLING_TIME', "
+            "'INACTIVITY_AGING', 'INACTIVITY_MTD'\n"
             "- order_by (object[]): e.g. "
-            '[{"field": "KILOMETER_RUN", "direction": "DESC"}]\n\n'
+            '[{"field": "KILOMETER_RUN", "direction": "DESC"}] — '
+            "direction must be 'ASC' or 'DESC' (never empty)\n\n"
             "ALERTS:\n"
             "- alert_status (string): 'TRIGGERED', 'RESOLVED'\n"
             "- criticality (string): 'CRITICAL', 'WARNING'\n"
@@ -323,9 +394,14 @@ class NaarniFleetTool(Tool[None]):
 
     def _headers(self) -> dict[str, str]:
         token = self._resolve_token()
+        # Training.md §2 requires x-device-id on every call. The device UUID
+        # is deployment-deterministic (same base URL → same UUID) and is the
+        # one the OTP flow already registered with Naarni, so it matches the
+        # token's scope.
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "x-device-id": naarni_device_uuid(),
             "x-platform": "WEB",
         }
 
@@ -798,6 +874,188 @@ class NaarniFleetTool(Tool[None]):
 
         return params
 
+    # ── UI period → timeGranularity mapping (training.md §3.6) ───────────────
+
+    @staticmethod
+    def _map_time_granularity(
+        ui_period: str | None, fallback: str | None
+    ) -> str | None:
+        """Resolve the correct `timeGranularity` enum for an API body.
+
+        Priority: ui_period (if provided) > fallback (already-uppercased enum
+        from the LLM) > None (caller omits the field entirely).
+
+        The Naarni backend only accepts {HOUR, DAY, WEEK, MONTH}. Training.md
+        §3.6 maps UI periods to the right enum so week-over-week charts show
+        7 daily bars (not 1 weekly bar) and month views show ~4 weekly bars.
+        """
+        if ui_period:
+            mapped = _UI_PERIOD_TO_GRANULARITY.get(ui_period.lower())
+            if mapped:
+                return mapped
+        if not fallback:
+            return None
+        upper = fallback.upper()
+        if upper in {"HOUR", "DAY", "WEEK", "MONTH"}:
+            return upper
+        # Unknown passthrough → safe default
+        return "DAY"
+
+    # ── Intent-driven payload builder (training.md §3.3–3.4) ─────────────────
+
+    @staticmethod
+    def _yesterday_time_range() -> dict[str, str]:
+        """Yesterday 00:00:00 → 23:59:59 in the tool's UTC timezone.
+
+        Training.md §3.3 requires this exact window for the 'active vehicles
+        count' card regardless of the user's date picker.
+        """
+        y = datetime.now(timezone.utc) - timedelta(days=1)
+        d = y.strftime("%Y-%m-%d")
+        return {"start": f"{d}T00:00:00", "end": f"{d}T23:59:59"}
+
+    @staticmethod
+    def _six_month_time_range(end_date: str | None = None) -> dict[str, str]:
+        """Last 6 months ending at `end_date` (or today if unset).
+
+        Training.md §3.3 mandates this window for inactive-vehicles and SLA
+        uptime intents — a single-day window would almost always return 0.
+        """
+        if end_date and "T" in end_date:
+            end_anchor = datetime.fromisoformat(end_date.split(".")[0])
+        else:
+            end_anchor = datetime.now(timezone.utc)
+        # 6 months ≈ 182 days — matches the webApp's dataSourceService.ts
+        start_anchor = end_anchor - timedelta(days=182)
+        return {
+            "start": start_anchor.strftime("%Y-%m-%dT00:00:00"),
+            "end": end_anchor.strftime("%Y-%m-%dT23:59:59"),
+        }
+
+    @staticmethod
+    def _week_ending_yesterday() -> dict[str, str]:
+        """Last 7 days ending at yesterday 23:59:59 — §3.4 safe default.
+
+        Used for depot/route dropdown queries when the UI hasn't picked a date
+        range yet. Avoids sending null/undefined timeRange which the Naarni
+        Java backend rejects outright.
+        """
+        now = datetime.now(timezone.utc)
+        end = now - timedelta(days=1)
+        start = end - timedelta(days=6)
+        return {
+            "start": start.strftime("%Y-%m-%dT00:00:00"),
+            "end": end.strftime("%Y-%m-%dT23:59:59"),
+        }
+
+    @classmethod
+    def _apply_intent_overrides(
+        cls, intent: str | None, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Deterministically shape the body for a product intent.
+
+        The LLM is bad at remembering all the per-screen rules from training.md
+        (yesterday-only, 6-month window, INACTIVITY_AGING ASC, strip empty
+        filter arrays, etc.). When the LLM passes `intent=<name>`, we ignore
+        whatever payload it built and enforce the rules server-side.
+
+        This mutates and returns `body`. Returns unchanged body if intent is
+        None or not recognized (forward compatibility — unknown intents from
+        a future LLM shouldn't crash the tool).
+        """
+        if not intent:
+            return body
+        intent = intent.lower()
+        if intent not in VALID_INTENTS:
+            logger.warning("Unknown intent=%r, ignoring overrides", intent)
+            return body
+
+        if intent == "active_vehicles_count":
+            # Training.md §3.3: yesterday-only, no groupBy/status/filters.
+            body["timeRange"] = cls._yesterday_time_range()
+            for k in (
+                "groupBy",
+                "status",
+                "depotIds",
+                "routeIds",
+                "vehicleIds",
+                "selectFields",
+                "orderBy",
+                "timeGranularity",
+            ):
+                body.pop(k, None)
+            return body
+
+        if intent in ("inactive_vehicles", "sla_uptime"):
+            # Force 6-month window ending at user's endDate (or today).
+            user_end = body.get("timeRange", {}).get("end")
+            body["timeRange"] = cls._six_month_time_range(user_end)
+            body["status"] = "INACTIVE"
+            body["groupBy"] = "VEHICLE"
+            if "orderBy" not in body:
+                body["orderBy"] = [{"field": "INACTIVITY_AGING", "direction": "ASC"}]
+            if intent == "sla_uptime" and "selectFields" not in body:
+                body["selectFields"] = ["INACTIVITY_MTD", "INACTIVITY_AGING"]
+            # Strip empty depot/route arrays — backend rejects [] here.
+            for k in ("depotIds", "routeIds"):
+                if body.get(k) == []:
+                    body.pop(k)
+            return body
+
+        if intent == "kms_per_vehicle":
+            body["groupBy"] = "VEHICLE"
+            # Strip empty filter arrays — backend rejects [] for this intent.
+            for k in ("depotIds", "routeIds"):
+                if body.get(k) == []:
+                    body.pop(k)
+            return body
+
+        if intent == "energy_chart":
+            if not body.get("vehicleIds"):
+                raise ToolCallException(
+                    message="energy_chart intent requires a vehicle",
+                    llm_facing_message=(
+                        "To show an energy chart, pass a "
+                        "vehicle_registration or vehicle_ids parameter."
+                    ),
+                )
+            body["groupBy"] = "TIME"
+            body.setdefault("selectFields", ["ENERGY_CONSUMED", "ENERGY_REGENERATED"])
+            body.setdefault(
+                "orderBy",
+                [{"field": "KILOMETER_RUN", "direction": "DESC"}],
+            )
+            return body
+
+        if intent == "kms_goal_chart":
+            if not body.get("vehicleIds"):
+                raise ToolCallException(
+                    message="kms_goal_chart intent requires a vehicle",
+                    llm_facing_message=(
+                        "To show a KMS-goal chart, pass a "
+                        "vehicle_registration or vehicle_ids parameter."
+                    ),
+                )
+            body["groupBy"] = "TIME"
+            body["status"] = "ACTIVE"
+            body.setdefault("selectFields", ["KMS_GOAL"])
+            body.setdefault("orderBy", [{"field": "TIME", "direction": "ASC"}])
+            return body
+
+        if intent == "depot_dropdown":
+            body["groupBy"] = "DEPOT"
+            if "timeRange" not in body or not body["timeRange"].get("start"):
+                body["timeRange"] = cls._week_ending_yesterday()
+            return body
+
+        if intent == "route_dropdown":
+            body["groupBy"] = "ROUTE"
+            if "timeRange" not in body or not body["timeRange"].get("start"):
+                body["timeRange"] = cls._week_ending_yesterday()
+            return body
+
+        return body
+
     # ── Action handlers ───────────────────────────────────────────────────────
     # Matches Postman collection: Naarni Backend
 
@@ -866,21 +1124,17 @@ class NaarniFleetTool(Tool[None]):
     def _get_performance(self, params: dict[str, Any]) -> Any:
         """POST /api/v1/analytics/performance
 
-        Smart defaults:
-          - If no group_by is set at all (even after _inject_resolved_ids),
-            default to 'ROUTE' — a per-route breakdown is almost always more
-            useful to the user than a single fleet-aggregate number.
-          - The LLM frequently sends params={} and expects meaningful data.
-            A route breakdown gives the LLM per-route context to answer
-            questions like "compare routes" or "which route has best mileage".
+        Flow:
+          1. Resolve name-based filters (route_name → route_ids, etc.).
+          2. Build the raw body from params.
+          3. If intent is set, apply training.md §3.3/§3.4 rules (yesterday
+             window, 6-month override, INACTIVITY_AGING ordering, ...) which
+             override whatever the LLM put in params.
+          4. Otherwise, fall back to the legacy default: group_by=ROUTE when
+             the LLM hasn't specified one.
         """
         params = self._inject_resolved_ids(params)
-
-        # If no group_by was set (not by LLM, not by auto-inject), default
-        # to ROUTE so the LLM always gets a per-route breakdown.
-        if "group_by" not in params:
-            params["group_by"] = "ROUTE"
-            logger.info("Default group_by=ROUTE (no group_by specified by LLM)")
+        intent = params.get("intent")
 
         default_range = self._default_time_range()
         body: dict[str, Any] = {
@@ -889,45 +1143,13 @@ class NaarniFleetTool(Tool[None]):
                 "end": params.get("end_date", default_range["end"]),
             },
         }
+        granularity = self._map_time_granularity(
+            params.get("ui_period"), params.get("time_granularity")
+        )
+        if granularity:
+            body["timeGranularity"] = granularity
         if "group_by" in params:
             body["groupBy"] = params["group_by"]
-        if "time_granularity" in params:
-            body["timeGranularity"] = params["time_granularity"]
-        if "order_by" in params:
-            body["orderBy"] = params["order_by"]
-        if "select_fields" in params:
-            body["selectFields"] = params["select_fields"]
-        if "vehicle_ids" in params:
-            body["vehicleIds"] = params["vehicle_ids"]
-        if "route_ids" in params:
-            body["routeIds"] = params["route_ids"]
-        if "depot_ids" in params:
-            body["depotIds"] = params["depot_ids"]
-
-        logger.info("Performance API body: %s", body)
-        result = self._api_post("/api/v1/analytics/performance", body)
-        return self._format_performance_response(result)
-
-    def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
-        """POST /api/v1/analytics/vehicle-activity"""
-        params = self._inject_resolved_ids(params)
-
-        # Default to ROUTE grouping like _get_performance
-        if "group_by" not in params:
-            params["group_by"] = "ROUTE"
-            logger.info("Default group_by=ROUTE for vehicle-activity")
-
-        default_range = self._default_time_range()
-        body: dict[str, Any] = {
-            "timeRange": {
-                "start": params.get("start_date", default_range["start"]),
-                "end": params.get("end_date", default_range["end"]),
-            },
-        }
-        if "group_by" in params:
-            body["groupBy"] = params["group_by"]
-        if "time_granularity" in params:
-            body["timeGranularity"] = params["time_granularity"]
         if "order_by" in params:
             body["orderBy"] = params["order_by"]
         if "select_fields" in params:
@@ -940,6 +1162,58 @@ class NaarniFleetTool(Tool[None]):
             body["depotIds"] = params["depot_ids"]
         if "status" in params:
             body["status"] = params["status"]
+
+        if intent:
+            body = self._apply_intent_overrides(intent, body)
+        elif "groupBy" not in body:
+            # No intent, no groupBy — default to ROUTE so the LLM gets a
+            # per-route breakdown instead of a single fleet-aggregate row.
+            body["groupBy"] = "ROUTE"
+            logger.info("Default groupBy=ROUTE (no intent and no group_by specified)")
+
+        logger.info("Performance API body: %s", body)
+        result = self._api_post("/api/v1/analytics/performance", body)
+        return self._format_performance_response(result)
+
+    def _get_vehicle_activity(self, params: dict[str, Any]) -> Any:
+        """POST /api/v1/analytics/vehicle-activity"""
+        params = self._inject_resolved_ids(params)
+        intent = params.get("intent")
+
+        default_range = self._default_time_range()
+        body: dict[str, Any] = {
+            "timeRange": {
+                "start": params.get("start_date", default_range["start"]),
+                "end": params.get("end_date", default_range["end"]),
+            },
+        }
+        granularity = self._map_time_granularity(
+            params.get("ui_period"), params.get("time_granularity")
+        )
+        if granularity:
+            body["timeGranularity"] = granularity
+        if "group_by" in params:
+            body["groupBy"] = params["group_by"]
+        if "order_by" in params:
+            body["orderBy"] = params["order_by"]
+        if "select_fields" in params:
+            body["selectFields"] = params["select_fields"]
+        if "vehicle_ids" in params:
+            body["vehicleIds"] = params["vehicle_ids"]
+        if "route_ids" in params:
+            body["routeIds"] = params["route_ids"]
+        if "depot_ids" in params:
+            body["depotIds"] = params["depot_ids"]
+        if "status" in params:
+            body["status"] = params["status"]
+
+        if intent:
+            body = self._apply_intent_overrides(intent, body)
+        elif "groupBy" not in body:
+            body["groupBy"] = "ROUTE"
+            logger.info("Default groupBy=ROUTE for vehicle-activity (no intent)")
+
+        logger.info("VehicleActivity API body: %s", body)
         result = self._api_post("/api/v1/analytics/vehicle-activity", body)
         return self._format_vehicle_activity_response(result)
 
@@ -969,6 +1243,27 @@ class NaarniFleetTool(Tool[None]):
     #
     # These formatters flatten and humanize the data so the LLM can answer
     # questions directly instead of struggling with epoch math and nesting.
+
+    # Map raw analytics metric keys → unit-suffixed keys the LLM reads.
+    # Naming the units in the field itself is the cheapest way to stop the
+    # LLM from reporting km/kWh as kWh/km or mis-labelling MTD totals. Keys
+    # not in this map are left untouched (counts, ids, statuses).
+    _METRIC_UNIT_RENAMES: dict[str, str] = {
+        "averageMileage": "averageMileage_kmPerKwh",
+        "kilometerRun": "kilometerRun_km",
+        "averageKilometerRun": "averageKilometerRun_km",
+        "kilometersRunMtd": "kilometersRunMtd_km",
+        "kilometersRunGoal": "kilometersRunGoal_km",
+        "kmsRun": "kmsRun_km",
+        "energyConsumed": "energyConsumed_kWh",
+        "energyRegenerated": "energyRegenerated_kWh",
+        "energyIdled": "energyIdled_kWh",
+        "idlingTime": "idlingTime_seconds",
+    }
+
+    @classmethod
+    def _rename_metric_key(cls, key: str) -> str:
+        return cls._METRIC_UNIT_RENAMES.get(key, key)
 
     @staticmethod
     def _epoch_to_date(epoch: float | int) -> str:
@@ -1021,7 +1316,15 @@ class NaarniFleetTool(Tool[None]):
         # --- Aggregate (no groupBy) ---
         total = data.get("totalResults")
         if isinstance(total, list) and total:
-            return total[0] if len(total) == 1 else {"totals": total}
+            renamed = [
+                (
+                    {cls._rename_metric_key(k): v for k, v in item.items()}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in total
+            ]
+            return renamed[0] if len(renamed) == 1 else {"totals": renamed}
 
         # --- groupBy=TIME ---
         time_groups = data.get("timeGroups")
@@ -1043,7 +1346,7 @@ class NaarniFleetTool(Tool[None]):
                         if k == "timeGroup":
                             continue
                         if v is not None:
-                            row[k] = v
+                            row[cls._rename_metric_key(k)] = v
                     daily.append(row)
             return {"daily": daily}
 
@@ -1062,7 +1365,7 @@ class NaarniFleetTool(Tool[None]):
                 for k, val in metrics.items():
                     if k == "id" or val is None:
                         continue
-                    entry[k] = val
+                    entry[cls._rename_metric_key(k)] = val
                 entry = {k: val for k, val in entry.items() if val is not None}
                 flat.append(entry)
             return {"vehicles": flat}
@@ -1084,7 +1387,7 @@ class NaarniFleetTool(Tool[None]):
                 for k, val in metrics.items():
                     if k == "id" or val is None:
                         continue
-                    entry[k] = val
+                    entry[cls._rename_metric_key(k)] = val
                 entry = {k: val for k, val in entry.items() if val is not None}
                 flat_routes.append(entry)
             return {"routes": flat_routes}
@@ -1104,7 +1407,7 @@ class NaarniFleetTool(Tool[None]):
                 for k, val in metrics.items():
                     if k == "id" or val is None:
                         continue
-                    entry[k] = val
+                    entry[cls._rename_metric_key(k)] = val
                 entry = {k: val for k, val in entry.items() if val is not None}
                 flat_depots.append(entry)
             return {"depots": flat_depots}
@@ -1124,7 +1427,15 @@ class NaarniFleetTool(Tool[None]):
         # --- Aggregate ---
         total = data.get("totalResults")
         if isinstance(total, list) and total:
-            return total[0] if len(total) == 1 else {"totals": total}
+            renamed = [
+                (
+                    {cls._rename_metric_key(k): v for k, v in item.items()}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in total
+            ]
+            return renamed[0] if len(renamed) == 1 else {"totals": renamed}
 
         # --- groupBy=TIME ---
         time_groups = data.get("timeGroups")
@@ -1146,7 +1457,7 @@ class NaarniFleetTool(Tool[None]):
                         if k == "timeGroup":
                             continue
                         if v is not None:
-                            row[k] = v
+                            row[cls._rename_metric_key(k)] = v
                     daily.append(row)
             return {"daily": daily}
 
@@ -1165,7 +1476,7 @@ class NaarniFleetTool(Tool[None]):
                 for k, val in metrics.items():
                     if k == "id" or val is None:
                         continue
-                    entry[k] = val
+                    entry[cls._rename_metric_key(k)] = val
                 entry = {k: val for k, val in entry.items() if val is not None}
                 flat.append(entry)
             return {"vehicles": flat}
@@ -1316,10 +1627,34 @@ class NaarniFleetTool(Tool[None]):
         }
 
     def _list_alerts(self, params: dict[str, Any]) -> Any:
+        """GET /api/v1/alerts.
+
+        Training.md §3.9 special rule: when `search` has a non-empty value,
+        uppercase it + strip whitespace, and drop every other filter except
+        `search`, `startDate`, `endDate`, `page`, `size`. This matches the
+        webApp's behavior — free-text search is an OR over multiple columns
+        at the backend and mixing other filters produces empty result sets.
+        """
         query_params: dict[str, Any] = {
             "page": params.get("page", 0),
             "size": params.get("size", 20),
         }
+
+        # Normalize + detect active search
+        raw_search = params.get("search")
+        if isinstance(raw_search, str):
+            normalized_search = "".join(raw_search.split()).upper()
+        else:
+            normalized_search = ""
+
+        if normalized_search:
+            query_params["search"] = normalized_search
+            for date_key in ("startDate", "start_date", "endDate", "end_date"):
+                if date_key in params:
+                    api_key = "startDate" if date_key.startswith("start") else "endDate"
+                    query_params[api_key] = params[date_key]
+            return self._api_get("/api/v1/alerts", query_params)
+
         for key in [
             "alertStatus",
             "alert_status",
@@ -1335,7 +1670,6 @@ class NaarniFleetTool(Tool[None]):
             "start_date",
             "endDate",
             "end_date",
-            "search",
         ]:
             if key in params:
                 api_key = key

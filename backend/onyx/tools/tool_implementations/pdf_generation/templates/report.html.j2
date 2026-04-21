@@ -205,9 +205,56 @@ pre {
     color: #888;
     text-align: center;
 }
+
+{# ─── WATERMARK ──────────────────────────────────────────────
+   position: fixed + WeasyPrint → the container is painted on every
+   generated page. We over-size the container (300% viewport) and rotate
+   the whole grid so the repeated text reads as diagonal stripes. Low
+   opacity keeps it professional and non-obstructive over body text.
+#}
+.watermark {
+    position: fixed;
+    top: -100%;
+    left: -100%;
+    right: -100%;
+    bottom: -100%;
+    width: 300%;
+    height: 300%;
+    transform: rotate(-30deg);
+    transform-origin: center center;
+    pointer-events: none;
+    z-index: -1;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: space-around;
+    justify-content: space-around;
+}
+
+.watermark-tile {
+    display: inline-block;
+    font-family: {{ brand.font_family }};
+    font-size: 28pt;
+    font-weight: 600;
+    letter-spacing: 2pt;
+    color: {{ brand.watermark_color }};
+    opacity: 0.06;
+    white-space: nowrap;
+    padding: 30pt 60pt;
+}
 </style>
 </head>
 <body>
+
+{# ─── WATERMARK (every page, diagonal, very light) ────────── #}
+{% if brand.watermark_text %}
+<div class="watermark" aria-hidden="true">
+    {# 48 tiles gives good coverage across A4/Letter at any orientation. #}
+    {% for _ in range(48) %}
+    <span class="watermark-tile">{{ brand.watermark_text }}</span>
+    {% endfor %}
+</div>
+{% endif %}
 
 {# ─── COVER PAGE ──────────────────────────────────────────── #}
 <div class="cover-page">

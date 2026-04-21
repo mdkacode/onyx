@@ -16,6 +16,7 @@ from typing_extensions import override
 
 from onyx.chat.emitter import Emitter
 from onyx.configs.constants import FileOrigin
+from onyx.db.models import User
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.utils import build_frontend_file_url
 from onyx.file_store.utils import build_full_frontend_file_url
@@ -47,6 +48,39 @@ DEFAULT_BRAND = BrandConfig()
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
 # Matches **bold** spans.
 _INLINE_BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+
+# Strict hex color validator. The LLM interpolates these values directly into
+# <style> blocks, so a lax validator would open a CSS injection channel
+# (`}body{display:none` etc.). We only accept 3-, 4-, 6-, or 8-digit hex.
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9A-Fa-f]{3,4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")
+
+
+def _safe_color(value: Any, fallback: str) -> str:
+    """Return `value` if it's a syntactically valid hex color, else `fallback`.
+
+    The brand color lands in raw CSS inside our Jinja template (e.g.
+    `color: {{ brand.primary_color }}`). Jinja autoescape only protects HTML
+    contexts — not CSS — so a malicious LLM response like
+    `#fff;}body{display:none` would break the document if passed through
+    untouched. Restricting to hex defuses that class of injection.
+    """
+    if isinstance(value, str) and _HEX_COLOR_RE.match(value.strip()):
+        return value.strip()
+    return fallback
+
+
+def _derive_user_label(user: User | None) -> str | None:
+    """Derive a short user label for the watermark from the authenticated user.
+
+    Uses the local part of the email (everything before `@`) so the watermark
+    stays short and non-PII-ish in shared docs. Returns None when no user is
+    available — the caller then disables the watermark entirely.
+    """
+    if user is None or not getattr(user, "email", None):
+        return None
+    email = str(user.email)
+    local = email.split("@", 1)[0]
+    return local or None
 
 
 def _inline_format(text: str) -> str:
@@ -85,9 +119,11 @@ class PdfGenerationTool(Tool[None]):
         self,
         tool_id: int,
         emitter: Emitter,
+        user: User | None = None,
     ) -> None:
         super().__init__(emitter=emitter)
         self._id = tool_id
+        self._user = user
 
     @property
     def id(self) -> int:
@@ -225,6 +261,41 @@ class PdfGenerationTool(Tool[None]):
                                 "confidentiality": {"type": "string"},
                             },
                         },
+                        "primary_color": {
+                            "type": "string",
+                            "description": (
+                                "Optional primary brand color for headings, "
+                                "table headers, and callout accents. Hex "
+                                "format only (e.g. '#0052CC'). Defaults to "
+                                "the NaArNi brand blue."
+                            ),
+                        },
+                        "secondary_color": {
+                            "type": "string",
+                            "description": (
+                                "Optional secondary color for subheadings and "
+                                "company-name accents. Hex format only."
+                            ),
+                        },
+                        "watermark_text": {
+                            "type": "string",
+                            "description": (
+                                "Optional label for the diagonal watermark "
+                                "that appears on every page (e.g. 'DRAFT', "
+                                "'CONFIDENTIAL'). Defaults to "
+                                "'NaArNi · <user>'. The watermark is always "
+                                "rendered — it cannot be disabled."
+                            ),
+                        },
+                        "watermark_color": {
+                            "type": "string",
+                            "description": (
+                                "Optional color for the watermark text. Hex "
+                                "format only (e.g. '#172B4D'). The watermark "
+                                "is rendered at low opacity so dark colors "
+                                "still appear as a soft professional tint."
+                            ),
+                        },
                     },
                     "required": ["title", "sections"],
                 },
@@ -240,6 +311,50 @@ class PdfGenerationTool(Tool[None]):
                     tool_id=self._id,
                 ),
             )
+        )
+
+    def _build_brand(self, llm_kwargs: dict[str, Any]) -> BrandConfig:
+        """Assemble a BrandConfig for this request.
+
+        Priority:
+          1. Prompt-supplied overrides (`primary_color`, `secondary_color`,
+             `watermark_text`, `watermark_color`) — validated, then applied.
+          2. Otherwise inherit defaults from `DEFAULT_BRAND`.
+
+        The watermark default is "NaArNi · <user-local-part>" when we have an
+        authenticated user. An explicit empty string from the LLM disables
+        the watermark (user asked to opt out).
+        """
+        primary = _safe_color(
+            llm_kwargs.get("primary_color"), DEFAULT_BRAND.primary_color
+        )
+        secondary = _safe_color(
+            llm_kwargs.get("secondary_color"), DEFAULT_BRAND.secondary_color
+        )
+        watermark_color = _safe_color(
+            llm_kwargs.get("watermark_color"), DEFAULT_BRAND.watermark_color
+        )
+
+        # Watermark is MANDATORY on every generated PDF — there is no
+        # opt-out. A prompt-supplied string (e.g. "DRAFT", "CONFIDENTIAL")
+        # replaces the default label; empty/whitespace falls back to
+        # "NaArNi · <user>" so nothing can produce an un-watermarked doc.
+        user_label = _derive_user_label(self._user)
+        default_watermark = f"NaArNi · {user_label}" if user_label else "NaArNi"
+        raw_watermark = llm_kwargs.get("watermark_text")
+        if isinstance(raw_watermark, str) and raw_watermark.strip():
+            watermark_text = raw_watermark.strip()
+        else:
+            watermark_text = default_watermark
+
+        return BrandConfig(
+            primary_color=primary,
+            secondary_color=secondary,
+            font_family=DEFAULT_BRAND.font_family,
+            company_name=DEFAULT_BRAND.company_name,
+            logo_base64=DEFAULT_BRAND.logo_base64,
+            watermark_text=watermark_text,
+            watermark_color=watermark_color,
         )
 
     @staticmethod
@@ -354,7 +469,7 @@ class PdfGenerationTool(Tool[None]):
                 "PdfGenerationTool requires at least one section with a heading"
             )
 
-        brand = DEFAULT_BRAND
+        brand = self._build_brand(llm_kwargs)
 
         try:
             html_content = self._render_html(

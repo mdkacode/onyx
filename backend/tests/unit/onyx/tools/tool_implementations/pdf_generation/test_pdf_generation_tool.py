@@ -17,10 +17,16 @@ from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
 from onyx.tools.tool_implementations.pdf_generation.models import Section
 from onyx.tools.tool_implementations.pdf_generation.models import TableData
 from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+    _derive_user_label,
+)
+from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
     _inline_format,
 )
 from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
     _jinja_env,
+)
+from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+    _safe_color,
 )
 from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
     PdfGenerationTool,
@@ -53,6 +59,10 @@ def test_tool_definition_schema_shape() -> None:
         "include_toc",
         "page_size",
         "metadata",
+        "primary_color",
+        "secondary_color",
+        "watermark_text",
+        "watermark_color",
     }
     assert props["template"]["enum"] == ["report", "brief"]
     assert props["page_size"]["enum"] == ["A4", "Letter"]
@@ -317,3 +327,267 @@ def test_run_invalid_template_falls_back_to_report() -> None:
         )
     # Fell back to 'report'
     assert spy.call_args.kwargs["template_name"] == "report"
+
+
+# ─── _safe_color: hex validation (CSS injection defense) ────────────────────
+
+
+def test_safe_color_accepts_three_digit_hex() -> None:
+    assert _safe_color("#abc", "#000") == "#abc"
+
+
+def test_safe_color_accepts_six_digit_hex() -> None:
+    assert _safe_color("#0052CC", "#000") == "#0052CC"
+
+
+def test_safe_color_accepts_eight_digit_hex_for_alpha() -> None:
+    assert _safe_color("#0052CC80", "#000") == "#0052CC80"
+
+
+def test_safe_color_rejects_non_hex_named_color() -> None:
+    # Named colors could still be safe in CSS, but we restrict to hex for
+    # a simple bright-line validator.
+    assert _safe_color("blue", "#111111") == "#111111"
+
+
+def test_safe_color_rejects_injection_payload() -> None:
+    # The classic payload: break out of the attribute and add a rule.
+    payload = "#fff;}body{display:none"
+    assert _safe_color(payload, "#000000") == "#000000"
+
+
+def test_safe_color_rejects_non_string() -> None:
+    assert _safe_color(None, "#fallback") == "#fallback"
+    assert _safe_color(42, "#fallback") == "#fallback"
+
+
+def test_safe_color_trims_whitespace() -> None:
+    assert _safe_color("  #abcdef  ", "#000") == "#abcdef"
+
+
+# ─── _derive_user_label: watermark name resolution ──────────────────────────
+
+
+def test_derive_user_label_uses_local_part_of_email() -> None:
+    user = MagicMock()
+    user.email = "first.last@example.com"
+    assert _derive_user_label(user) == "first.last"
+
+
+def test_derive_user_label_none_when_no_user() -> None:
+    assert _derive_user_label(None) is None
+
+
+def test_derive_user_label_none_when_email_missing() -> None:
+    user = MagicMock(spec=[])  # no attributes
+    assert _derive_user_label(user) is None
+
+
+# ─── _build_brand: merges prompt overrides with defaults ────────────────────
+
+
+def _tool(user_email: str | None = None) -> PdfGenerationTool:
+    user = None
+    if user_email is not None:
+        user = MagicMock()
+        user.email = user_email
+    return PdfGenerationTool(tool_id=1, emitter=MagicMock(), user=user)
+
+
+def test_build_brand_default_watermark_uses_username() -> None:
+    tool = _tool(user_email="testuser@example.com")
+    brand = tool._build_brand({})
+    assert brand.watermark_text == "NaArNi · testuser"
+
+
+def test_build_brand_default_watermark_falls_back_to_naarni_only() -> None:
+    tool = _tool(user_email=None)
+    brand = tool._build_brand({})
+    # No user → plain "NaArNi" (no trailing separator or empty local part).
+    assert brand.watermark_text == "NaArNi"
+
+
+def test_build_brand_explicit_watermark_overrides_default() -> None:
+    tool = _tool(user_email="testuser@example.com")
+    brand = tool._build_brand({"watermark_text": "CONFIDENTIAL"})
+    assert brand.watermark_text == "CONFIDENTIAL"
+
+
+def test_build_brand_empty_watermark_string_falls_back_to_default() -> None:
+    # Watermark is mandatory: an empty / whitespace override must NOT
+    # disable it — it falls through to the default "NaArNi · <user>".
+    tool = _tool(user_email="testuser@example.com")
+    brand = tool._build_brand({"watermark_text": "   "})
+    assert brand.watermark_text == "NaArNi · testuser"
+
+
+def test_build_brand_non_string_watermark_falls_back_to_default() -> None:
+    tool = _tool(user_email="testuser@example.com")
+    # Defensive: LLM could send null/number — still get a watermark.
+    brand = tool._build_brand({"watermark_text": None})
+    assert brand.watermark_text == "NaArNi · testuser"
+
+
+def test_build_brand_applies_valid_color_overrides() -> None:
+    tool = _tool()
+    brand = tool._build_brand(
+        {
+            "primary_color": "#FF5722",
+            "secondary_color": "#00796B",
+            "watermark_color": "#424242",
+        }
+    )
+    assert brand.primary_color == "#FF5722"
+    assert brand.secondary_color == "#00796B"
+    assert brand.watermark_color == "#424242"
+
+
+def test_build_brand_ignores_invalid_colors() -> None:
+    tool = _tool()
+    brand = tool._build_brand(
+        {
+            "primary_color": "javascript:alert(1)",
+            "secondary_color": "#zzz",
+            "watermark_color": "red",  # named colors rejected
+        }
+    )
+    # All three fall through to the BrandConfig defaults.
+    assert brand.primary_color == "#0052CC"
+    assert brand.secondary_color == "#172B4D"
+    assert brand.watermark_color == "#172B4D"
+
+
+# ─── Template: watermark renders once per tile + respects opt-out ──────────
+
+
+def test_report_template_renders_watermark_tiles() -> None:
+    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+
+    sections = [Section(heading="Intro", body="Hello")]
+    brand = BrandConfig(watermark_text="NaArNi · testuser")
+    html = _jinja_env.get_template("report.html.j2").render(
+        title="T",
+        subtitle=None,
+        sections=sections,
+        brand=brand,
+        metadata=None,
+        include_toc=False,
+        page_size="A4",
+        generated_at="2026-04-21",
+    )
+    # The watermark container is present.
+    assert 'class="watermark"' in html
+    # Several tiles rendered with the text.
+    assert html.count("NaArNi · testuser") >= 10
+    # And the color from BrandConfig is interpolated into the CSS.
+    assert "#172B4D" in html
+
+
+def test_report_template_omits_watermark_when_disabled() -> None:
+    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+
+    sections = [Section(heading="Intro", body="Hello")]
+    brand = BrandConfig(watermark_text=None)
+    html = _jinja_env.get_template("report.html.j2").render(
+        title="T",
+        subtitle=None,
+        sections=sections,
+        brand=brand,
+        metadata=None,
+        include_toc=False,
+        page_size="A4",
+        generated_at="2026-04-21",
+    )
+    # The watermark *element* is gone, but the class rules can still be in
+    # the stylesheet (they're harmless without the element).
+    assert 'class="watermark"' not in html
+
+
+def test_brief_template_renders_watermark_tiles() -> None:
+    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+
+    sections = [Section(heading="Summary", body="Short")]
+    brand = BrandConfig(watermark_text="NaArNi · testuser")
+    html = _jinja_env.get_template("brief.html.j2").render(
+        title="T",
+        subtitle=None,
+        sections=sections,
+        brand=brand,
+        metadata=None,
+        include_toc=False,
+        page_size="A4",
+        generated_at="2026-04-21",
+    )
+    assert 'class="watermark"' in html
+    assert html.count("NaArNi · testuser") >= 10
+
+
+# ─── run: threads watermark/color params end-to-end ────────────────────────
+
+
+def test_run_threads_prompt_color_and_watermark_through_to_template() -> None:
+    emitter = MagicMock()
+    user = MagicMock()
+    user.email = "testuser@example.com"
+    tool = PdfGenerationTool(tool_id=9, emitter=emitter, user=user)
+
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "fid"
+
+    captured_html: list[str] = []
+
+    def fake_render_pdf(html_content: str) -> tuple[bytes, int]:
+        captured_html.append(html_content)
+        return (b"%PDF-1.4 stub", 2)
+
+    with (
+        patch.object(PdfGenerationTool, "_render_pdf", side_effect=fake_render_pdf),
+        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
+    ):
+        tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            title="Branded",
+            sections=[{"heading": "Intro", "body": "Hi"}],
+            primary_color="#FF5722",
+            watermark_text="DRAFT",
+            watermark_color="#333333",
+        )
+
+    html_content = captured_html[0]
+    # Primary color override made it into the stylesheet.
+    assert "#FF5722" in html_content
+    # Custom watermark text is tiled on the page.
+    assert html_content.count("DRAFT") >= 10
+    # Watermark color override applied.
+    assert "#333333" in html_content
+
+
+def test_run_uses_default_watermark_with_user_when_unspecified() -> None:
+    emitter = MagicMock()
+    user = MagicMock()
+    user.email = "first.last@example.com"
+    tool = PdfGenerationTool(tool_id=9, emitter=emitter, user=user)
+
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "fid"
+
+    captured_html: list[str] = []
+
+    def fake_render_pdf(html_content: str) -> tuple[bytes, int]:
+        captured_html.append(html_content)
+        return (b"%PDF-1.4 stub", 1)
+
+    with (
+        patch.object(PdfGenerationTool, "_render_pdf", side_effect=fake_render_pdf),
+        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
+    ):
+        tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            title="Auto-watermark",
+            sections=[{"heading": "Intro", "body": "Hi"}],
+        )
+
+    html_content = captured_html[0]
+    assert "NaArNi · first.last" in html_content
