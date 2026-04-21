@@ -12,6 +12,7 @@
 # macos
 .DS_store
 
+anayltics-service/
 # python
 .venv
 .mypy_cache

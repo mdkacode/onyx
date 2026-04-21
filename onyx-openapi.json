@@ -1,0 +1,1002 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ONYX Analytics Service API",
+    "description": "# ONYX API\nThe ONYX Analytics Service provides a comprehensive set of APIs for fleet management, vehicle tracking, and performance analytics.\n\n### Key Features:\n- **Performance Analytics**: Query energy consumption, mileage, and idling metrics for vehicles, routes, and depots.\n- **Vehicle Activity**: Track vehicle uptime, inactivity aging, and operational status.\n- **Fleet & Vehicle Management**: Full CRUD operations for fleets, vehicles, routes, and organizations.\n- **Authentication**: Secure JWT-based authentication with OTP support.\n\n### Querying via Prompt:\nThis API is designed to be easily discoverable by LLMs. Use the detailed descriptions of filter fields (routeIds, vehicleIds, timeRange) to translate natural language queries (e.g., \"Show me performance for Route 5 last month\") into precise API calls.\n",
+    "version": "0.0.1",
+    "contact": {
+      "name": "Naarni Support",
+      "url": "https://naarni.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "https://api.naarni.com",
+      "description": "Production Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Use a JWT Bearer token obtained from the `/v1/auth/token` endpoint. \nAll protected endpoints require this header: `Authorization: Bearer <token>`\n"
+      }
+    },
+    "schemas": {
+      "NaarniHttpResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Indicates if the operation was successful."
+          },
+          "statusCode": {
+            "type": "integer",
+            "description": "HTTP status code of the response."
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true,
+            "description": "Detailed error message if success is false."
+          },
+          "code": {
+            "type": "string",
+            "nullable": true,
+            "description": "Internal error code for programmatic handling."
+          },
+          "body": {
+            "type": "object",
+            "description": "The actual response payload (varies by endpoint)."
+          }
+        }
+      },
+      "PaginatedResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "totalElements": {
+            "type": "integer"
+          },
+          "totalPages": {
+            "type": "integer"
+          },
+          "first": {
+            "type": "boolean"
+          },
+          "last": {
+            "type": "boolean"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "hasPrevious": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LocalDateTimeRange": {
+        "type": "object",
+        "description": "Represents a time range between a start and end date-time.\nFormat: `YYYY-MM-DDTHH:mm:SS.SSS`\n",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00.000"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-31T23:59:59.999"
+          }
+        }
+      },
+      "ContactType": {
+        "type": "string",
+        "enum": [
+          "PHONE",
+          "EMAIL"
+        ],
+        "description": "The method of contacting the user for OTP."
+      },
+      "GenerateOTPDTO": {
+        "type": "object",
+        "required": [
+          "contact",
+          "contactType",
+          "deviceId"
+        ],
+        "properties": {
+          "contact": {
+            "type": "string",
+            "example": "+919876543210"
+          },
+          "contactType": {
+            "$ref": "#/components/schemas/ContactType"
+          },
+          "deviceId": {
+            "type": "integer",
+            "description": "The unique ID of the user's device."
+          }
+        }
+      },
+      "SortDirection": {
+        "type": "string",
+        "enum": [
+          "ASC",
+          "DESC"
+        ]
+      },
+      "TimeGranularity": {
+        "type": "string",
+        "enum": [
+          "HOUR",
+          "DAY",
+          "WEEK",
+          "MONTH"
+        ]
+      },
+      "PerformanceSelectField": {
+        "type": "string",
+        "enum": [
+          "ENERGY_CONSUMED",
+          "ENERGY_REGENERATED",
+          "ENERGY_IDLED",
+          "KILOMETERS_RUN_MTD",
+          "IDLING_TIME",
+          "KMS_GOAL"
+        ]
+      },
+      "PerformanceApiRequest": {
+        "type": "object",
+        "required": [
+          "timeRange"
+        ],
+        "properties": {
+          "timeRange": {
+            "$ref": "#/components/schemas/LocalDateTimeRange"
+          },
+          "timeGranularity": {
+            "$ref": "#/components/schemas/TimeGranularity"
+          },
+          "groupBy": {
+            "type": "string",
+            "description": "Field to group results by (e.g., \"vehicle\", \"route\", \"depot\")."
+          },
+          "orderBy": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "direction": {
+                  "$ref": "#/components/schemas/SortDirection"
+                }
+              }
+            }
+          },
+          "routeIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "depotIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "vehicleIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "selectFields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceSelectField"
+            }
+          }
+        }
+      },
+      "PerformanceAnalyticsResult": {
+        "type": "object",
+        "description": "Performance metrics for a specific entity (vehicle, route, depot, or time group).",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "timeGroup": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "averageMileage": {
+            "type": "number"
+          },
+          "kilometerRun": {
+            "type": "number"
+          },
+          "energyConsumed": {
+            "type": "number"
+          },
+          "energyRegenerated": {
+            "type": "number"
+          },
+          "energyIdled": {
+            "type": "number"
+          },
+          "kilometersRunMtd": {
+            "type": "number"
+          },
+          "kilometersRunGoal": {
+            "type": "number"
+          },
+          "idlingTime": {
+            "type": "number"
+          },
+          "performanceStatus": {
+            "type": "string",
+            "description": "Calculated status (e.g., \"EXCELLENT\", \"GOOD\", \"POOR\")."
+          }
+        }
+      },
+      "VehicleActivityAnalyticsResult": {
+        "type": "object",
+        "description": "Activity metrics for a vehicle.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timeGroup": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "inactivityAging": {
+            "type": "number"
+          },
+          "inactivityMTD": {
+            "type": "number"
+          },
+          "inactivityLifetime": {
+            "type": "number"
+          },
+          "kmsRun": {
+            "type": "number"
+          },
+          "activeCount": {
+            "type": "integer"
+          },
+          "inactiveCount": {
+            "type": "integer"
+          },
+          "totalCount": {
+            "type": "integer"
+          },
+          "kmsGoal": {
+            "type": "number"
+          }
+        }
+      },
+      "VehicleRecentInfoAnalyticsResult": {
+        "type": "object",
+        "description": "Recent operational data for a vehicle.",
+        "properties": {
+          "vehicleId": {
+            "type": "integer"
+          },
+          "soc": {
+            "type": "number",
+            "description": "State of Charge (%)"
+          },
+          "remainingRange": {
+            "type": "number"
+          },
+          "lastUpdatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "VehicleAnalyticsResponseDTO": {
+        "type": "object",
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteApiDto"
+            }
+          },
+          "depots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DepotApiDto"
+            }
+          },
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "registrationNumber": {
+                  "type": "string"
+                },
+                "performance": {
+                  "$ref": "#/components/schemas/PerformanceAnalyticsResult"
+                },
+                "recentInfo": {
+                  "$ref": "#/components/schemas/VehicleRecentInfoAnalyticsResult"
+                }
+              }
+            }
+          },
+          "vehicleToRouteIds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "vehicleToDepotIds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "VehicleStatus": {
+        "type": "string",
+        "enum": [
+          "PLUGGED_IN",
+          "CHARGING",
+          "MOVING",
+          "IDLING_AC_ON",
+          "IDLING_AC_OFF",
+          "NOT_MOVING",
+          "UNDER_MAINTENANCE",
+          "OUT_OF_SERVICE"
+        ]
+      },
+      "VehicleApiDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "registrationNumber": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "make": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VehicleStatus"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "fleetId": {
+            "type": "integer"
+          }
+        }
+      },
+      "RouteApiDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "distance": {
+            "type": "number"
+          },
+          "startCityName": {
+            "type": "string"
+          },
+          "endCityName": {
+            "type": "string"
+          }
+        }
+      },
+      "DepotApiDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "cityId": {
+            "type": "integer"
+          }
+        }
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "required": [
+          "account"
+        ],
+        "properties": {
+          "account": {
+            "type": "object",
+            "properties": {
+              "phone": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "organizationId": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "uuid": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "phone": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            }
+          },
+          "profile": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "lastName": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "OrganizationResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "ADMIN",
+              "OPERATOR",
+              "FINANCIER",
+              "OWNER"
+            ]
+          },
+          "isActive": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CityResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/auth/otp/generate": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Generate OTP for authentication",
+        "operationId": "generateOTP",
+        "parameters": [
+          {
+            "name": "X-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Platform",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ANDROID",
+                "IOS",
+                "WEB"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateOTPDTO"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OTP generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NaarniHttpResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Exchange credentials for a JWT token",
+        "description": "This endpoint is intercepted by a security filter. \nIt supports multiple grant types depending on the request body (OTP, Refresh Token, Google Auth).\n",
+        "responses": {
+          "200": {
+            "description": "Token issued successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accessToken": {
+                      "type": "string"
+                    },
+                    "refreshToken": {
+                      "type": "string"
+                    },
+                    "expiresIn": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/performance": {
+      "post": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get vehicle performance metrics",
+        "description": "Returns aggregated performance metrics (mileage, energy, distance) grouped by vehicle, route, or depot.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceApiRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "vehicles": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "registrationNumber": {
+                            "type": "string"
+                          },
+                          "metrics": {
+                            "$ref": "#/components/schemas/PerformanceAnalyticsResult"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/vehicle-analytics": {
+      "post": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get consolidated vehicle analytics",
+        "description": "Returns a comprehensive view of vehicles including their performance metrics, recent operational info (SOC, range), and current associations (route, depot).\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "routeIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "vehicleIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "timeRange": {
+                    "$ref": "#/components/schemas/LocalDateTimeRange"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleAnalyticsResponseDTO"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/vehicle-activity": {
+      "post": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get vehicle activity metrics",
+        "description": "Track uptime and inactivity statistics.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "timeRange": {
+                    "$ref": "#/components/schemas/LocalDateTimeRange"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "vehicles": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "metrics": {
+                            "$ref": "#/components/schemas/VehicleActivityAnalyticsResult"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/fleets": {
+      "get": {
+        "tags": [
+          "Fleet Management"
+        ],
+        "summary": "List all fleets",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "body": {
+                      "$ref": "#/components/schemas/PaginatedResponse"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vehicles": {
+      "get": {
+        "tags": [
+          "Vehicle Management"
+        ],
+        "summary": "List all vehicles",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VehicleApiDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/me": {
+      "get": {
+        "tags": [
+          "User Management"
+        ],
+        "summary": "Get current authenticated user details",
+        "description": "Returns the profile and account info of the user identified by the Bearer token.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users": {
+      "get": {
+        "tags": [
+          "User Management"
+        ],
+        "summary": "List all active users",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          }
+        }
+      }
+    },
+    "/v1/organizations": {
+      "get": {
+        "tags": [
+          "Organization Management"
+        ],
+        "summary": "List all organizations",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cities": {
+      "get": {
+        "tags": [
+          "City Management"
+        ],
+        "summary": "List all cities",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CityResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
