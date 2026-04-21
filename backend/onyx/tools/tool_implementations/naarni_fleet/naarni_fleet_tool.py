@@ -22,6 +22,7 @@ from datetime import timedelta
 from datetime import timezone
 from typing import Any
 from typing import cast
+from zoneinfo import ZoneInfo
 
 import requests
 from sqlalchemy.orm import Session
@@ -47,6 +48,11 @@ from onyx.tools.models import ToolResponse
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+# NaArNi operates in India (IST). Users speak in IST, the Naarni Java
+# backend expects UTC wall-clock (LocalDateTime in UTC). We anchor all
+# user-facing date math in IST and convert to UTC at the wire.
+_IST = ZoneInfo("Asia/Kolkata")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -262,7 +268,7 @@ class NaarniFleetTool(Tool[None]):
 
     @property
     def description(self) -> str:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         return self._DESCRIPTION_TEMPLATE.format(today=today)
 
     @property
@@ -277,13 +283,15 @@ class NaarniFleetTool(Tool[None]):
 
     def _build_params_description(self) -> str:
         """Build the params description with today's date for examples."""
-        today = datetime.now(timezone.utc)
+        today = datetime.now(_IST)
         today_str = today.strftime("%Y-%m-%d")
         week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
         month_ago = (today - timedelta(days=30)).strftime("%Y-%m-%d")
         yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         return (
-            f"Parameters depending on the action. Today is {today_str}.\n\n"
+            f"Parameters depending on the action. Today is {today_str} (India / IST).\n"
+            "All dates you emit should be in IST wall-clock — the tool "
+            "converts to UTC for the Naarni API automatically.\n\n"
             "DATE RANGE (CRITICAL — you MUST compute and pass these for "
             "performance / activity / analytics queries):\n"
             f"- start_date (string): Format YYYY-MM-DDTHH:mm:ss\n"
@@ -681,23 +689,21 @@ class NaarniFleetTool(Tool[None]):
         """POST with JSON body (analytics endpoints)."""
         return self._request("POST", path, json_body=body)
 
-    @staticmethod
-    def _default_time_range() -> dict[str, str]:
-        """Last 30 days as default for analytics queries.
+    @classmethod
+    def _default_time_range(cls) -> dict[str, str]:
+        """Default to the last 7 days (IST-anchored, UTC output).
 
-        Using "today only" was the root cause of 0.0 values — most routes
-        have no data for a single day when buses are between trips.  A 30-day
-        window matches what the dashboard UI defaults to and ensures the LLM
-        always gets meaningful aggregate data when the user doesn't specify
-        an explicit date range.
-
-        Format: YYYY-MM-DDTHH:mm:ss (no milliseconds — the Naarni
-        Java backend uses LocalDateTime which rejects .SSS suffixes).
+        Empty / unspecified date ranges default here. A single-day window
+        often returns 0.0 because buses may not have run that day; a week
+        gives the LLM meaningful aggregate data.
         """
-        now = datetime.now(timezone.utc)
-        end = now.strftime("%Y-%m-%d")
-        start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-        return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
+        now_ist = datetime.now(_IST)
+        end = now_ist.strftime("%Y-%m-%d")
+        start = (now_ist - timedelta(days=6)).strftime("%Y-%m-%d")
+        return {
+            "start": cls._ist_wall_to_utc_string(f"{start}T00:00:00"),
+            "end": cls._ist_wall_to_utc_string(f"{end}T23:59:59"),
+        }
 
     # ── Name → ID resolution ────────────────────────────────────────────────
     #
@@ -807,24 +813,36 @@ class NaarniFleetTool(Tool[None]):
         return None
 
     @staticmethod
-    def _normalize_timestamp(ts: str, is_end: bool = False) -> str:
-        """Normalize timestamp to YYYY-MM-DDTHH:mm:ss for Naarni API.
+    def _ist_wall_to_utc_string(ts: str) -> str:
+        """Interpret `ts` as IST wall-clock, return UTC wall-clock string.
 
-        The Naarni Java backend uses LocalDateTime and rejects
-        millisecond suffixes (.SSS).  This helper:
-          - Expands bare dates (YYYY-MM-DD) to full datetime
-          - Strips milliseconds if the LLM included them
+        LLM emits dates in IST (that's what the user said); Naarni API
+        stores/queries in UTC. Format on both sides is
+        YYYY-MM-DDTHH:mm:ss with no timezone suffix.
+        """
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_IST)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    @classmethod
+    def _normalize_timestamp(cls, ts: str, is_end: bool = False) -> str:
+        """Normalize LLM-supplied timestamp → UTC wall-clock for Naarni.
+
+        Steps:
+          1. Expand bare dates (YYYY-MM-DD) → full datetime (start/end of day).
+          2. Strip milliseconds (Java LocalDateTime rejects .SSS).
+          3. Interpret the value as IST wall-clock and convert to UTC —
+             the user speaks IST, the backend stores UTC.
         """
         if not ts:
             return ts
-        # If it's just a date like "2026-04-05", add time
         if len(ts) == 10 and "T" not in ts:
             suffix = "T23:59:59" if is_end else "T00:00:00"
-            return ts + suffix
-        # Strip milliseconds if present (e.g. ".000" or ".999")
+            ts = ts + suffix
         if "." in ts:
             ts = ts.split(".")[0]
-        return ts
+        return cls._ist_wall_to_utc_string(ts)
 
     def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
         """Auto-resolve route_name → route_ids, vehicle_registration → vehicle_ids,
@@ -903,49 +921,58 @@ class NaarniFleetTool(Tool[None]):
 
     # ── Intent-driven payload builder (training.md §3.3–3.4) ─────────────────
 
-    @staticmethod
-    def _yesterday_time_range() -> dict[str, str]:
-        """Yesterday 00:00:00 → 23:59:59 in the tool's UTC timezone.
+    @classmethod
+    def _yesterday_time_range(cls) -> dict[str, str]:
+        """Yesterday 00:00:00 → 23:59:59 IST, emitted in UTC.
 
         Training.md §3.3 requires this exact window for the 'active vehicles
         count' card regardless of the user's date picker.
         """
-        y = datetime.now(timezone.utc) - timedelta(days=1)
+        y = datetime.now(_IST) - timedelta(days=1)
         d = y.strftime("%Y-%m-%d")
-        return {"start": f"{d}T00:00:00", "end": f"{d}T23:59:59"}
+        return {
+            "start": cls._ist_wall_to_utc_string(f"{d}T00:00:00"),
+            "end": cls._ist_wall_to_utc_string(f"{d}T23:59:59"),
+        }
 
-    @staticmethod
-    def _six_month_time_range(end_date: str | None = None) -> dict[str, str]:
-        """Last 6 months ending at `end_date` (or today if unset).
+    @classmethod
+    def _six_month_time_range(cls, end_date: str | None = None) -> dict[str, str]:
+        """Last 6 months ending at `end_date` (or today IST if unset).
 
         Training.md §3.3 mandates this window for inactive-vehicles and SLA
         uptime intents — a single-day window would almost always return 0.
+        `end_date`, when supplied, is already a UTC wall-clock string
+        (it was normalized upstream), so we keep it as-is and walk back.
         """
         if end_date and "T" in end_date:
-            end_anchor = datetime.fromisoformat(end_date.split(".")[0])
-        else:
-            end_anchor = datetime.now(timezone.utc)
-        # 6 months ≈ 182 days — matches the webApp's dataSourceService.ts
-        start_anchor = end_anchor - timedelta(days=182)
+            end_dt_utc = datetime.fromisoformat(end_date.split(".")[0])
+            start_dt_utc = end_dt_utc - timedelta(days=182)
+            return {
+                "start": start_dt_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                "end": end_dt_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+        now_ist = datetime.now(_IST)
+        start_str = (now_ist - timedelta(days=182)).strftime("%Y-%m-%dT00:00:00")
+        end_str = now_ist.strftime("%Y-%m-%dT23:59:59")
         return {
-            "start": start_anchor.strftime("%Y-%m-%dT00:00:00"),
-            "end": end_anchor.strftime("%Y-%m-%dT23:59:59"),
+            "start": cls._ist_wall_to_utc_string(start_str),
+            "end": cls._ist_wall_to_utc_string(end_str),
         }
 
-    @staticmethod
-    def _week_ending_yesterday() -> dict[str, str]:
-        """Last 7 days ending at yesterday 23:59:59 — §3.4 safe default.
+    @classmethod
+    def _week_ending_yesterday(cls) -> dict[str, str]:
+        """Last 7 days ending at yesterday 23:59:59 IST — §3.4 safe default.
 
         Used for depot/route dropdown queries when the UI hasn't picked a date
         range yet. Avoids sending null/undefined timeRange which the Naarni
         Java backend rejects outright.
         """
-        now = datetime.now(timezone.utc)
-        end = now - timedelta(days=1)
+        now_ist = datetime.now(_IST)
+        end = now_ist - timedelta(days=1)
         start = end - timedelta(days=6)
         return {
-            "start": start.strftime("%Y-%m-%dT00:00:00"),
-            "end": end.strftime("%Y-%m-%dT23:59:59"),
+            "start": cls._ist_wall_to_utc_string(start.strftime("%Y-%m-%dT00:00:00")),
+            "end": cls._ist_wall_to_utc_string(end.strftime("%Y-%m-%dT23:59:59")),
         }
 
     @classmethod

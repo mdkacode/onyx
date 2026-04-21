@@ -83,13 +83,29 @@ def _base_body() -> dict:
 
 
 def test_active_vehicles_count_forces_yesterday_only_and_strips_filters() -> None:
-    body = _base_body()
-    out = NaarniFleetTool._apply_intent_overrides("active_vehicles_count", {}, body)
+    from zoneinfo import ZoneInfo
 
-    # timeRange must be yesterday 00:00:00 → 23:59:59
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-    assert out["timeRange"]["start"] == f"{yesterday}T00:00:00"
-    assert out["timeRange"]["end"] == f"{yesterday}T23:59:59"
+    body = _base_body()
+    out = NaarniFleetTool._apply_intent_overrides("active_vehicles_count", body)
+
+    # timeRange covers yesterday IST 00:00:00 → 23:59:59, emitted as UTC.
+    ist = ZoneInfo("Asia/Kolkata")
+    y_ist = datetime.now(ist) - timedelta(days=1)
+    d = y_ist.strftime("%Y-%m-%d")
+    expected_start = (
+        datetime.fromisoformat(f"{d}T00:00:00")
+        .replace(tzinfo=ist)
+        .astimezone(timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%S")
+    )
+    expected_end = (
+        datetime.fromisoformat(f"{d}T23:59:59")
+        .replace(tzinfo=ist)
+        .astimezone(timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%S")
+    )
+    assert out["timeRange"]["start"] == expected_start
+    assert out["timeRange"]["end"] == expected_end
 
     # Every other filter/grouping field must be stripped — the card's
     # product definition is "active yesterday, fleet-wide".
@@ -113,7 +129,7 @@ def test_inactive_vehicles_forces_six_month_window_and_defaults() -> None:
             "end": "2026-04-10T23:59:59",
         },
     }
-    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", body)
 
     # Window must be 6 months ending at the user's endDate.
     end_dt = datetime.fromisoformat(out["timeRange"]["end"])
@@ -132,14 +148,14 @@ def test_inactive_vehicles_respects_user_supplied_orderBy() -> None:
         "timeRange": {"start": "", "end": "2026-04-10T23:59:59"},
         "orderBy": [{"field": "INACTIVITY_MTD", "direction": "DESC"}],
     }
-    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", body)
     # User-supplied orderBy wins over the default.
     assert out["orderBy"] == [{"field": "INACTIVITY_MTD", "direction": "DESC"}]
 
 
 def test_sla_uptime_sets_default_select_fields() -> None:
     body = {"timeRange": {"end": "2026-04-10T23:59:59"}}
-    out = NaarniFleetTool._apply_intent_overrides("sla_uptime", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("sla_uptime", body)
     assert out["selectFields"] == ["INACTIVITY_MTD", "INACTIVITY_AGING"]
     assert out["status"] == "INACTIVE"
     assert out["groupBy"] == "VEHICLE"
@@ -151,7 +167,7 @@ def test_inactive_vehicles_strips_empty_depot_and_route_arrays() -> None:
         "depotIds": [],
         "routeIds": [],
     }
-    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("inactive_vehicles", body)
     # Backend rejects empty arrays for this intent.
     assert "depotIds" not in out
     assert "routeIds" not in out
@@ -163,7 +179,7 @@ def test_kms_per_vehicle_strips_empty_filters_and_sets_groupby() -> None:
         "depotIds": [],
         "routeIds": [12],
     }
-    out = NaarniFleetTool._apply_intent_overrides("kms_per_vehicle", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("kms_per_vehicle", body)
     assert out["groupBy"] == "VEHICLE"
     assert "depotIds" not in out  # empty stripped
     assert out["routeIds"] == [12]  # non-empty preserved
@@ -174,7 +190,7 @@ def test_energy_chart_requires_vehicle_ids() -> None:
         "timeRange": {"start": "2026-04-01T00:00:00", "end": "2026-04-10T23:59:59"},
     }
     with pytest.raises(ToolCallException):
-        NaarniFleetTool._apply_intent_overrides("energy_chart", {}, body)
+        NaarniFleetTool._apply_intent_overrides("energy_chart", body)
 
 
 def test_energy_chart_sets_defaults() -> None:
@@ -182,7 +198,7 @@ def test_energy_chart_sets_defaults() -> None:
         "timeRange": {"start": "2026-04-01T00:00:00", "end": "2026-04-10T23:59:59"},
         "vehicleIds": [42],
     }
-    out = NaarniFleetTool._apply_intent_overrides("energy_chart", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("energy_chart", body)
     assert out["groupBy"] == "TIME"
     assert out["selectFields"] == ["ENERGY_CONSUMED", "ENERGY_REGENERATED"]
     assert out["orderBy"] == [{"field": "KILOMETER_RUN", "direction": "DESC"}]
@@ -193,7 +209,7 @@ def test_kms_goal_chart_forces_active_status() -> None:
         "timeRange": {"start": "2026-04-01T00:00:00", "end": "2026-04-10T23:59:59"},
         "vehicleIds": [42],
     }
-    out = NaarniFleetTool._apply_intent_overrides("kms_goal_chart", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("kms_goal_chart", body)
     assert out["groupBy"] == "TIME"
     assert out["status"] == "ACTIVE"
     assert out["selectFields"] == ["KMS_GOAL"]
@@ -202,15 +218,16 @@ def test_kms_goal_chart_forces_active_status() -> None:
 
 def test_depot_dropdown_fills_default_time_range() -> None:
     body: dict = {}
-    out = NaarniFleetTool._apply_intent_overrides("depot_dropdown", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("depot_dropdown", body)
     assert out["groupBy"] == "DEPOT"
     # "week ending yesterday" — a valid 7-day window.
     start = datetime.fromisoformat(out["timeRange"]["start"])
     end = datetime.fromisoformat(out["timeRange"]["end"])
     assert (end - start).days == 6
-    # end should be yesterday (UTC).
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-    assert end.date() == yesterday
+    # end is yesterday-IST 23:59:59 converted to UTC — within the last ~30h.
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert end < now_utc_naive + timedelta(hours=1)
+    assert end > now_utc_naive - timedelta(days=2)
 
 
 def test_route_dropdown_preserves_user_time_range() -> None:
@@ -220,7 +237,7 @@ def test_route_dropdown_preserves_user_time_range() -> None:
             "end": "2026-04-15T23:59:59",
         },
     }
-    out = NaarniFleetTool._apply_intent_overrides("route_dropdown", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("route_dropdown", body)
     assert out["groupBy"] == "ROUTE"
     # User-supplied timeRange wins — dropdown default only kicks in when
     # timeRange is empty / missing.
@@ -229,13 +246,13 @@ def test_route_dropdown_preserves_user_time_range() -> None:
 
 def test_unknown_intent_is_ignored() -> None:
     body = {"groupBy": "ROUTE"}
-    out = NaarniFleetTool._apply_intent_overrides("foo_bar", {}, body)
+    out = NaarniFleetTool._apply_intent_overrides("foo_bar", body)
     assert out == {"groupBy": "ROUTE"}
 
 
 def test_no_intent_is_identity() -> None:
     body = {"groupBy": "ROUTE"}
-    out = NaarniFleetTool._apply_intent_overrides(None, {}, body)
+    out = NaarniFleetTool._apply_intent_overrides(None, body)
     assert out == {"groupBy": "ROUTE"}
 
 

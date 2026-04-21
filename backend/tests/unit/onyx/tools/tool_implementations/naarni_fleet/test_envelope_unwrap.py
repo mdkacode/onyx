@@ -660,36 +660,36 @@ def test_resolve_route_ids_from_route_name() -> None:
 # ─── _normalize_timestamp ────────────────────────────────────────────────
 
 
-def test_normalize_timestamp_passthrough_valid() -> None:
-    """Valid timestamps without millis pass through unchanged."""
+def test_normalize_timestamp_ist_to_utc() -> None:
+    """IST wall-clock in → UTC wall-clock out (offset 5h30m)."""
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-01T00:00:00")
-        == "2026-04-01T00:00:00"
+        == "2026-03-31T18:30:00"
     )
 
 
-def test_normalize_timestamp_strips_millis() -> None:
-    """Milliseconds must be stripped — Naarni API rejects them."""
+def test_normalize_timestamp_strips_millis_and_converts() -> None:
+    """Milliseconds stripped first, then IST → UTC conversion applied."""
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-01T00:00:00.000")
-        == "2026-04-01T00:00:00"
+        == "2026-03-31T18:30:00"
     )
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-10T23:59:59.999", is_end=True)
-        == "2026-04-10T23:59:59"
+        == "2026-04-10T18:29:59"
     )
 
 
 def test_normalize_timestamp_date_only_start() -> None:
-    """Bare date for start → add T00:00:00."""
-    assert NaarniFleetTool._normalize_timestamp("2026-04-05") == "2026-04-05T00:00:00"
+    """Bare date for start → T00:00:00 IST → UTC."""
+    assert NaarniFleetTool._normalize_timestamp("2026-04-05") == "2026-04-04T18:30:00"
 
 
 def test_normalize_timestamp_date_only_end() -> None:
-    """Bare date for end → add T23:59:59."""
+    """Bare date for end → T23:59:59 IST → UTC."""
     assert (
         NaarniFleetTool._normalize_timestamp("2026-04-05", is_end=True)
-        == "2026-04-05T23:59:59"
+        == "2026-04-05T18:29:59"
     )
 
 
