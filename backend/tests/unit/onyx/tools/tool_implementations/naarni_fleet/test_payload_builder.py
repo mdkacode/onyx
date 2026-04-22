@@ -16,7 +16,6 @@ without a network, DB, or tool instance.
 
 from datetime import datetime
 from datetime import timedelta
-from datetime import timezone
 
 import pytest
 
@@ -88,24 +87,12 @@ def test_active_vehicles_count_forces_yesterday_only_and_strips_filters() -> Non
     body = _base_body()
     out = NaarniFleetTool._apply_intent_overrides("active_vehicles_count", body)
 
-    # timeRange covers yesterday IST 00:00:00 → 23:59:59, emitted as UTC.
+    # timeRange is yesterday IST 00:00:00 → 23:59:59 as literal wall-clock
+    # — the Naarni API reads it as LocalDateTime, no tz conversion.
     ist = ZoneInfo("Asia/Kolkata")
-    y_ist = datetime.now(ist) - timedelta(days=1)
-    d = y_ist.strftime("%Y-%m-%d")
-    expected_start = (
-        datetime.fromisoformat(f"{d}T00:00:00")
-        .replace(tzinfo=ist)
-        .astimezone(timezone.utc)
-        .strftime("%Y-%m-%dT%H:%M:%S")
-    )
-    expected_end = (
-        datetime.fromisoformat(f"{d}T23:59:59")
-        .replace(tzinfo=ist)
-        .astimezone(timezone.utc)
-        .strftime("%Y-%m-%dT%H:%M:%S")
-    )
-    assert out["timeRange"]["start"] == expected_start
-    assert out["timeRange"]["end"] == expected_end
+    d = (datetime.now(ist) - timedelta(days=1)).strftime("%Y-%m-%d")
+    assert out["timeRange"]["start"] == f"{d}T00:00:00"
+    assert out["timeRange"]["end"] == f"{d}T23:59:59"
 
     # Every other filter/grouping field must be stripped — the card's
     # product definition is "active yesterday, fleet-wide".
@@ -217,17 +204,17 @@ def test_kms_goal_chart_forces_active_status() -> None:
 
 
 def test_depot_dropdown_fills_default_time_range() -> None:
+    from zoneinfo import ZoneInfo
+
     body: dict = {}
     out = NaarniFleetTool._apply_intent_overrides("depot_dropdown", body)
     assert out["groupBy"] == "DEPOT"
-    # "week ending yesterday" — a valid 7-day window.
+    # "week ending yesterday IST" — literal wall-clock, 7-day window.
     start = datetime.fromisoformat(out["timeRange"]["start"])
     end = datetime.fromisoformat(out["timeRange"]["end"])
     assert (end - start).days == 6
-    # end is yesterday-IST 23:59:59 converted to UTC — within the last ~30h.
-    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-    assert end < now_utc_naive + timedelta(hours=1)
-    assert end > now_utc_naive - timedelta(days=2)
+    yesterday_ist = (datetime.now(ZoneInfo("Asia/Kolkata")) - timedelta(days=1)).date()
+    assert end.date() == yesterday_ist
 
 
 def test_route_dropdown_preserves_user_time_range() -> None:

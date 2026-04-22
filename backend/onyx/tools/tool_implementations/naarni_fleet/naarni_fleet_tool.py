@@ -290,8 +290,9 @@ class NaarniFleetTool(Tool[None]):
         yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         return (
             f"Parameters depending on the action. Today is {today_str} (India / IST).\n"
-            "All dates you emit should be in IST wall-clock — the tool "
-            "converts to UTC for the Naarni API automatically.\n\n"
+            "Emit all dates as IST wall-clock in the format "
+            "YYYY-MM-DDTHH:mm:ss (no timezone suffix, no milliseconds). "
+            "The Naarni API reads them literally — do not convert to UTC.\n\n"
             "DATE RANGE (CRITICAL — you MUST compute and pass these for "
             "performance / activity / analytics queries):\n"
             f"- start_date (string): Format YYYY-MM-DDTHH:mm:ss\n"
@@ -700,10 +701,7 @@ class NaarniFleetTool(Tool[None]):
         now_ist = datetime.now(_IST)
         end = now_ist.strftime("%Y-%m-%d")
         start = (now_ist - timedelta(days=6)).strftime("%Y-%m-%d")
-        return {
-            "start": cls._ist_wall_to_utc_string(f"{start}T00:00:00"),
-            "end": cls._ist_wall_to_utc_string(f"{end}T23:59:59"),
-        }
+        return {"start": f"{start}T00:00:00", "end": f"{end}T23:59:59"}
 
     # ── Name → ID resolution ────────────────────────────────────────────────
     #
@@ -813,27 +811,22 @@ class NaarniFleetTool(Tool[None]):
         return None
 
     @staticmethod
-    def _ist_wall_to_utc_string(ts: str) -> str:
-        """Interpret `ts` as IST wall-clock, return UTC wall-clock string.
+    def _normalize_timestamp(ts: str, is_end: bool = False) -> str:
+        """Normalize LLM-supplied timestamp to the Naarni API's expected form.
 
-        LLM emits dates in IST (that's what the user said); Naarni API
-        stores/queries in UTC. Format on both sides is
-        YYYY-MM-DDTHH:mm:ss with no timezone suffix.
-        """
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_IST)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-
-    @classmethod
-    def _normalize_timestamp(cls, ts: str, is_end: bool = False) -> str:
-        """Normalize LLM-supplied timestamp → UTC wall-clock for Naarni.
+        The Naarni Java backend reads LocalDateTime — a tz-unaware
+        YYYY-MM-DDTHH:mm:ss string interpreted against IST data. The web
+        app sends exactly what the user picks in the calendar (IST
+        wall-clock) with no conversion, and so do we.
 
         Steps:
           1. Expand bare dates (YYYY-MM-DD) → full datetime (start/end of day).
           2. Strip milliseconds (Java LocalDateTime rejects .SSS).
-          3. Interpret the value as IST wall-clock and convert to UTC —
-             the user speaks IST, the backend stores UTC.
+          3. Pass the IST wall-clock string through unchanged — NO tz
+             conversion. Converting IST→UTC was a bug: the server reads
+             the string literally, so e.g. converting midnight IST to
+             18:30 UTC made the server treat 18:30 as 18:30 IST — a
+             totally wrong window.
         """
         if not ts:
             return ts
@@ -842,7 +835,7 @@ class NaarniFleetTool(Tool[None]):
             ts = ts + suffix
         if "." in ts:
             ts = ts.split(".")[0]
-        return cls._ist_wall_to_utc_string(ts)
+        return ts
 
     def _inject_resolved_ids(self, params: dict[str, Any]) -> dict[str, Any]:
         """Auto-resolve route_name → route_ids, vehicle_registration → vehicle_ids,
@@ -930,10 +923,7 @@ class NaarniFleetTool(Tool[None]):
         """
         y = datetime.now(_IST) - timedelta(days=1)
         d = y.strftime("%Y-%m-%d")
-        return {
-            "start": cls._ist_wall_to_utc_string(f"{d}T00:00:00"),
-            "end": cls._ist_wall_to_utc_string(f"{d}T23:59:59"),
-        }
+        return {"start": f"{d}T00:00:00", "end": f"{d}T23:59:59"}
 
     @classmethod
     def _six_month_time_range(cls, end_date: str | None = None) -> dict[str, str]:
@@ -941,22 +931,20 @@ class NaarniFleetTool(Tool[None]):
 
         Training.md §3.3 mandates this window for inactive-vehicles and SLA
         uptime intents — a single-day window would almost always return 0.
-        `end_date`, when supplied, is already a UTC wall-clock string
-        (it was normalized upstream), so we keep it as-is and walk back.
+        All values are IST wall-clock strings — no tz conversion (the
+        Naarni Java backend reads them as LocalDateTime).
         """
         if end_date and "T" in end_date:
-            end_dt_utc = datetime.fromisoformat(end_date.split(".")[0])
-            start_dt_utc = end_dt_utc - timedelta(days=182)
+            end_dt = datetime.fromisoformat(end_date.split(".")[0])
+            start_dt = end_dt - timedelta(days=182)
             return {
-                "start": start_dt_utc.strftime("%Y-%m-%dT%H:%M:%S"),
-                "end": end_dt_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                "start": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                "end": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
             }
         now_ist = datetime.now(_IST)
-        start_str = (now_ist - timedelta(days=182)).strftime("%Y-%m-%dT00:00:00")
-        end_str = now_ist.strftime("%Y-%m-%dT23:59:59")
         return {
-            "start": cls._ist_wall_to_utc_string(start_str),
-            "end": cls._ist_wall_to_utc_string(end_str),
+            "start": (now_ist - timedelta(days=182)).strftime("%Y-%m-%dT00:00:00"),
+            "end": now_ist.strftime("%Y-%m-%dT23:59:59"),
         }
 
     @classmethod
@@ -971,8 +959,8 @@ class NaarniFleetTool(Tool[None]):
         end = now_ist - timedelta(days=1)
         start = end - timedelta(days=6)
         return {
-            "start": cls._ist_wall_to_utc_string(start.strftime("%Y-%m-%dT00:00:00")),
-            "end": cls._ist_wall_to_utc_string(end.strftime("%Y-%m-%dT23:59:59")),
+            "start": start.strftime("%Y-%m-%dT00:00:00"),
+            "end": end.strftime("%Y-%m-%dT23:59:59"),
         }
 
     @classmethod
