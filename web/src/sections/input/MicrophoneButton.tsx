@@ -2,12 +2,10 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
-import { SvgMicrophone } from "@opal/icons";
+import { SvgMicrophone, SvgSimpleLoader } from "@opal/icons";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useVoiceMode } from "@/providers/VoiceModeProvider";
 import { toast } from "@/hooks/useToast";
-import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
 import { ChatState } from "@/app/app/interfaces";
 
 interface MicrophoneButtonProps {
@@ -122,7 +120,10 @@ function MicrophoneButton({
     startRecording,
     stopRecording,
     setMuted,
-  } = useVoiceRecorder({ onFinalTranscript: handleFinalTranscript });
+  } = useVoiceRecorder({
+    onFinalTranscript: handleFinalTranscript,
+    autoStopOnSilence: autoSend,
+  });
 
   // Expose stopRecording to parent
   useEffect(() => {
@@ -312,7 +313,7 @@ function MicrophoneButton({
   }, [error]);
 
   // Icon: show loader when processing, otherwise mic
-  const icon = isProcessing ? SimpleLoader : SvgMicrophone;
+  const icon = isProcessing ? SvgSimpleLoader : SvgMicrophone;
 
   // Disable when processing or TTS is playing (don't want to pick up TTS audio)
   const isDisabled =
@@ -326,14 +327,13 @@ function MicrophoneButton({
   const prominence = isRecording ? "primary" : "tertiary";
 
   return (
-    <Disabled disabled={isDisabled}>
-      <Button
-        icon={icon}
-        onClick={handleClick}
-        aria-label={isRecording ? "Stop recording" : "Start recording"}
-        prominence={prominence}
-      />
-    </Disabled>
+    <Button
+      disabled={isDisabled}
+      icon={icon}
+      onClick={handleClick}
+      aria-label={isRecording ? "Stop recording" : "Start recording"}
+      prominence={prominence}
+    />
   );
 }
 

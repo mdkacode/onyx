@@ -88,10 +88,22 @@ def _patch_task_app(task: Any, mock_app: MagicMock) -> Generator[None, None, Non
     the actual task instance.  We patch ``app`` on that instance's class
     (a unique Celery-generated Task subclass) so the mock is scoped to this
     task only.
+
+    Also patches ``celery_get_broker_client`` so the mock app doesn't need
+    a real broker URL.
     """
     task_instance = task.run.__self__
-    with patch.object(
-        type(task_instance), "app", new_callable=PropertyMock, return_value=mock_app
+    with (
+        patch.object(
+            type(task_instance),
+            "app",
+            new_callable=PropertyMock,
+            return_value=mock_app,
+        ),
+        patch(
+            "onyx.background.celery.tasks.user_file_processing.tasks.celery_get_broker_client",
+            return_value=MagicMock(),
+        ),
     ):
         yield
 
@@ -152,9 +164,9 @@ class TestDeletePerFileGuardKey:
             # send_task must not have been called with this specific file's ID
             for call in mock_app.send_task.call_args_list:
                 kwargs = call.kwargs.get("kwargs", {})
-                assert kwargs.get("user_file_id") != str(
-                    uf.id
-                ), f"File {uf.id} should have been skipped because its guard key exists"
+                assert kwargs.get("user_file_id") != str(uf.id), (
+                    f"File {uf.id} should have been skipped because its guard key exists"
+                )
         finally:
             redis_client.delete(guard_key)
 
@@ -180,13 +192,13 @@ class TestDeletePerFileGuardKey:
             ):
                 check_for_user_file_delete.run(tenant_id=TEST_TENANT_ID)
 
-            assert redis_client.exists(
-                guard_key
-            ), "Guard key should be set in Redis after enqueue"
-            ttl = int(redis_client.ttl(guard_key))  # type: ignore[arg-type]
-            assert (
-                0 < ttl <= CELERY_USER_FILE_DELETE_TASK_EXPIRES
-            ), f"Guard key TTL {ttl}s is outside the expected range (0, {CELERY_USER_FILE_DELETE_TASK_EXPIRES}]"
+            assert redis_client.exists(guard_key), (
+                "Guard key should be set in Redis after enqueue"
+            )
+            ttl = int(redis_client.ttl(guard_key))
+            assert 0 < ttl <= CELERY_USER_FILE_DELETE_TASK_EXPIRES, (
+                f"Guard key TTL {ttl}s is outside the expected range (0, {CELERY_USER_FILE_DELETE_TASK_EXPIRES}]"
+            )
         finally:
             redis_client.delete(guard_key)
 
@@ -217,9 +229,9 @@ class TestDeleteTaskExpiry:
                 check_for_user_file_delete.run(tenant_id=TEST_TENANT_ID)
 
             # At least one task should have been submitted (for our file)
-            assert (
-                mock_app.send_task.call_count >= 1
-            ), "Expected at least one task to be submitted"
+            assert mock_app.send_task.call_count >= 1, (
+                "Expected at least one task to be submitted"
+            )
 
             # Every submitted task must carry expires
             for call in mock_app.send_task.call_args_list:
@@ -227,7 +239,9 @@ class TestDeleteTaskExpiry:
                 assert call.kwargs.get("queue") == OnyxCeleryQueues.USER_FILE_DELETE
                 assert (
                     call.kwargs.get("expires") == CELERY_USER_FILE_DELETE_TASK_EXPIRES
-                ), "Task must be submitted with the correct expires value to prevent stale task accumulation"
+                ), (
+                    "Task must be submitted with the correct expires value to prevent stale task accumulation"
+                )
         finally:
             redis_client.delete(guard_key)
 
@@ -269,6 +283,6 @@ class TestDeleteWorkerClearsGuardKey:
             if delete_lock.owned():
                 delete_lock.release()
 
-        assert not redis_client.exists(
-            guard_key
-        ), "Guard key should be deleted when the worker picks up the task"
+        assert not redis_client.exists(guard_key), (
+            "Guard key should be deleted when the worker picks up the task"
+        )

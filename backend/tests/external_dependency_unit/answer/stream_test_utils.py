@@ -27,18 +27,19 @@ def create_placement(
     turn_index: int,
     tab_index: int = 0,
     sub_turn_index: int | None = None,
+    model_index: int | None = 0,
 ) -> Placement:
     return Placement(
         turn_index=turn_index,
         tab_index=tab_index,
         sub_turn_index=sub_turn_index,
+        model_index=model_index,
     )
 
 
 def submit_query(
     query: str,
     chat_session_id: UUID | None,
-    db_session: Session,
     user: User,
     llm_override: LLMOverride | None = None,
 ) -> Iterator[AnswerStreamPart]:
@@ -55,7 +56,6 @@ def submit_query(
     return handle_stream_message_objects(
         new_msg_req=request,
         user=user,
-        db_session=db_session,
     )
 
 
@@ -65,7 +65,7 @@ def create_chat_session(
 ) -> ChatSession:
     return create_chat_session_from_request(
         chat_session_request=ChatSessionCreationRequest(),
-        user_id=user.id,
+        user=user,
         db_session=db_session,
     )
 

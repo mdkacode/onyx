@@ -3,17 +3,16 @@
 import { useState } from "react";
 import Card from "@/refresh-components/cards/Card";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import Text from "@/refresh-components/texts/Text";
 import InputFile from "@/refresh-components/inputs/InputFile";
 import { Section } from "@/layouts/general-layouts";
-import * as InputLayouts from "@/layouts/input-layouts";
+import { InputVertical } from "@opal/layouts";
 import { SvgXCircle, SvgCheckCircle, SvgXOctagon } from "@opal/icons";
 import { uploadLicense } from "@/lib/billing/svc";
 import { LicenseStatus } from "@/lib/billing/interfaces";
 import { formatDateShort } from "@/lib/dateUtils";
 
-const BILLING_HELP_URL = "https://docs.onyx.app/more/billing";
+const BILLING_HELP_URL = "https://docs.onyx.app/admins/billing/overview";
 
 interface LicenseActivationCardProps {
   isOpen: boolean;
@@ -147,11 +146,13 @@ export default function LicenseActivationCard({
           <Text headingH3>
             {hasLicense ? "Update License Key" : "Activate License Key"}
           </Text>
-          <Disabled disabled={isActivating}>
-            <Button prominence="secondary" onClick={handleClose}>
-              Cancel
-            </Button>
-          </Disabled>
+          <Button
+            disabled={isActivating}
+            prominence="secondary"
+            onClick={handleClose}
+          >
+            Cancel
+          </Button>
         </Section>
         <Text secondaryBody text03>
           Manually add and activate a license for this Naarni instance.
@@ -174,13 +175,14 @@ export default function LicenseActivationCard({
             </div>
           )}
 
-          <InputLayouts.Vertical
+          <InputVertical
             title="License Key"
             subDescription={
               error
                 ? undefined
                 : "Paste or attach your license key file you received from Naarni."
             }
+            withLabel
           >
             <InputFile
               placeholder="eyJwYXlsb2FkIjogeyJ2ZXJzaW9..."
@@ -189,7 +191,6 @@ export default function LicenseActivationCard({
                 setError(null);
               }}
               error={!!error}
-              className="billing-license-input"
             />
             {error && (
               <Section
@@ -200,7 +201,7 @@ export default function LicenseActivationCard({
                 height="auto"
               >
                 <div className="billing-error-icon">
-                  <SvgXCircle />
+                  <SvgXCircle size={12} />
                 </div>
                 <Text secondaryBody text04>
                   {error}.{" "}
@@ -215,21 +216,22 @@ export default function LicenseActivationCard({
                 </Text>
               </Section>
             )}
-          </InputLayouts.Vertical>
+          </InputVertical>
         </Section>
       </div>
 
       {/* Footer */}
       <Section flexDirection="row" justifyContent="end" padding={1}>
-        <Disabled disabled={isActivating || !licenseKey.trim() || success}>
-          <Button onClick={handleActivate}>
-            {isActivating
-              ? "Activating..."
-              : hasLicense
-                ? "Update License"
-                : "Activate License"}
-          </Button>
-        </Disabled>
+        <Button
+          disabled={isActivating || !licenseKey.trim() || success}
+          onClick={handleActivate}
+        >
+          {isActivating
+            ? "Activating..."
+            : hasLicense
+              ? "Update License"
+              : "Activate License"}
+        </Button>
       </Section>
     </Card>
   );

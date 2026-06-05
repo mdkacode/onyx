@@ -1,4 +1,5 @@
-import type { IconFunctionComponent } from "@opal/types";
+import type { IconFunctionComponent, RichStr } from "@opal/types";
+import { Text } from "@opal/components";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -9,10 +10,10 @@ interface IllustrationContentProps {
   illustration?: IconFunctionComponent;
 
   /** Main title text, center-aligned. Uses `font-main-content-emphasis`. */
-  title: string;
+  title: string | RichStr;
 
   /** Optional description below the title, center-aligned. Uses `font-secondary-body`. */
-  description?: string;
+  description?: string | RichStr;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,15 +63,16 @@ function IllustrationContent({
   return (
     <div className="flex flex-col items-center gap-3 p-5 text-center">
       {Illustration && (
-        <Illustration
-          aria-hidden="true"
-          className="shrink-0 w-[7.5rem] h-[7.5rem]"
-        />
+        <Illustration aria-hidden="true" className="shrink-0 w-30 h-30" />
       )}
       <div className="flex flex-col items-center text-center">
-        <p className="font-main-content-emphasis text-text-04">{title}</p>
+        <Text font="main-content-emphasis" color="text-04" as="p">
+          {title}
+        </Text>
         {description && (
-          <p className="font-secondary-body text-text-03">{description}</p>
+          <Text font="secondary-body" color="text-03" as="p">
+            {description}
+          </Text>
         )}
       </div>
     </div>

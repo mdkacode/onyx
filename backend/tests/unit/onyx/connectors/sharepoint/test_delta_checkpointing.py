@@ -112,7 +112,7 @@ def _build_ready_checkpoint(
 def _setup_connector(monkeypatch: pytest.MonkeyPatch) -> SharepointConnector:
     """Create a connector with common methods mocked."""
     connector = SharepointConnector()
-    connector._graph_client = object()
+    connector._graph_client = object()  # ty: ignore[invalid-assignment]
     connector.include_site_pages = False
 
     def fake_resolve_drive(
@@ -145,6 +145,8 @@ def _mock_convert(monkeypatch: pytest.MonkeyPatch) -> None:
         include_permissions: bool = False,  # noqa: ARG001
         parent_hierarchy_raw_node_id: str | None = None,  # noqa: ARG001
         access_token: str | None = None,  # noqa: ARG001
+        treat_sharing_link_as_public: bool = False,  # noqa: ARG001
+        raw_file_callback: Any = None,  # noqa: ARG001
     ) -> Document:
         return _make_document(driveitem)
 

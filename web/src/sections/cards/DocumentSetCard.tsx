@@ -1,12 +1,12 @@
 "use client";
 
 import { DocumentSetSummary } from "@/lib/types";
-import Checkbox from "@/refresh-components/inputs/Checkbox";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Checkbox } from "@opal/components";
+import { Tooltip } from "@opal/components";
 import { SvgFiles } from "@opal/icons";
 import { Interactive } from "@opal/core";
 import { AttachmentItemLayout } from "@/layouts/general-layouts";
-import Spacer from "@/refresh-components/Spacer";
+import { Spacer } from "@opal/components";
 
 export interface DocumentSetCardProps {
   documentSet: DocumentSetSummary;
@@ -24,23 +24,21 @@ export default function DocumentSetCard({
   disabledTooltip,
 }: DocumentSetCardProps) {
   return (
-    <SimpleTooltip
+    <Tooltip
       tooltip={disabled && disabledTooltip ? disabledTooltip : undefined}
-      disabled={!disabled || !disabledTooltip}
     >
-      <div className="max-w-[12rem]">
-        <Interactive.Stateless
+      <div className="max-w-48">
+        <Interactive.Simple
           onClick={
             disabled || isSelected === undefined
               ? undefined
               : () => onSelectToggle?.(!isSelected)
           }
-          variant="none"
         >
           <Interactive.Container
             data-testid={`document-set-card-${documentSet.id}`}
             border
-            heightVariant="fit"
+            size="fit"
           >
             <AttachmentItemLayout
               icon={SvgFiles}
@@ -62,10 +60,10 @@ export default function DocumentSetCard({
                 )
               }
             />
-            <Spacer horizontal rem={0.5} />
+            <Spacer orientation="horizontal" rem={0.5} />
           </Interactive.Container>
-        </Interactive.Stateless>
+        </Interactive.Simple>
       </div>
-    </SimpleTooltip>
+    </Tooltip>
   );
 }

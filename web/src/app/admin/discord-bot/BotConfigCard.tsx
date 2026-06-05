@@ -5,18 +5,17 @@ import { Section } from "@/layouts/general-layouts";
 import Text from "@/refresh-components/texts/Text";
 import Card from "@/refresh-components/cards/Card";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import { Badge } from "@/components/ui/badge";
 import PasswordInputTypeIn from "@/refresh-components/inputs/PasswordInputTypeIn";
 import { ThreeDotsLoader } from "@/components/Loading";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Tooltip } from "@opal/components";
 import {
   useDiscordBotConfig,
   useDiscordGuilds,
 } from "@/app/admin/discord-bot/hooks";
 import { createBotConfig, deleteBotConfig } from "@/app/admin/discord-bot/lib";
 import { toast } from "@/hooks/useToast";
-import { ConfirmEntityModal } from "@/components/modals/ConfirmEntityModal";
+import { ConfirmEntityModal } from "@/sections/modals/ConfirmEntityModal";
 import { getFormattedDateTime } from "@/lib/dateUtils";
 
 export function BotConfigCard() {
@@ -120,21 +119,19 @@ export function BotConfigCard() {
             )}
           </Section>
           {isConfigured && (
-            <SimpleTooltip
+            <Tooltip
               tooltip={
                 hasServerConfigs ? "Delete server configs first" : undefined
               }
-              disabled={!hasServerConfigs}
             >
-              <Disabled disabled={isSubmitting || hasServerConfigs}>
-                <Button
-                  variant="danger"
-                  onClick={() => setShowDeleteConfirm(true)}
-                >
-                  Delete Discord Token
-                </Button>
-              </Disabled>
-            </SimpleTooltip>
+              <Button
+                disabled={isSubmitting || hasServerConfigs}
+                variant="danger"
+                onClick={() => setShowDeleteConfirm(true)}
+              >
+                Delete Discord Token
+              </Button>
+            </Tooltip>
           )}
         </Section>
 
@@ -165,13 +162,13 @@ export function BotConfigCard() {
                 onChange={(e) => setBotToken(e.target.value)}
                 placeholder="Enter bot token..."
                 disabled={isSubmitting}
-                className="flex-1"
               />
-              <Disabled disabled={isSubmitting || !botToken.trim()}>
-                <Button onClick={handleSaveToken}>
-                  {isSubmitting ? "Saving..." : "Save Token"}
-                </Button>
-              </Disabled>
+              <Button
+                disabled={isSubmitting || !botToken.trim()}
+                onClick={handleSaveToken}
+              >
+                {isSubmitting ? "Saving..." : "Save Token"}
+              </Button>
             </Section>
           </Section>
         )}

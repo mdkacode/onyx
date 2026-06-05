@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Button from "@/refresh-components/buttons/Button";
-import { Button as OpalButton } from "@opal/components";
+import { Button as OpalButton, Divider } from "@opal/components";
 import {
   ConfigurableSources,
   CredentialFieldSpec,
@@ -30,12 +30,10 @@ import { DropdownMenuItemWithTooltip } from "@/components/ui/dropdown-menu-with-
 import { toast } from "@/hooks/useToast";
 
 import { Badge } from "@/components/ui/badge";
-import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Tooltip } from "@opal/components";
 import { ListFieldInput } from "@/refresh-components/inputs/ListFieldInput";
-import Checkbox from "@/refresh-components/inputs/Checkbox";
-import Separator from "@/refresh-components/Separator";
-import { SvgSettings } from "@opal/icons";
+import { Checkbox } from "@opal/components";
+import { SvgSettings, SvgSimpleLoader } from "@opal/icons";
 
 export interface FederatedConnectorFormProps {
   connector: ConfigurableSources;
@@ -136,7 +134,7 @@ async function createFederatedConnector(
 
 async function updateFederatedConnector(
   id: number,
-  credentials: CredentialForm,
+  credentials: CredentialForm | null,
   config?: ConfigForm
 ): Promise<{ success: boolean; message: string }> {
   try {
@@ -146,7 +144,7 @@ async function updateFederatedConnector(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        credentials,
+        credentials: credentials ?? undefined,
         config: config || {},
       }),
     });
@@ -204,7 +202,9 @@ export function FederatedConnectorForm({
   const isEditMode = connectorId !== undefined;
 
   const [formState, setFormState] = useState<FormState>({
-    credentials: preloadedConnectorData?.credentials || {},
+    // In edit mode, don't populate credentials with masked values from the API.
+    // Masked values (e.g. "••••••••••••") would be saved back and corrupt the real credentials.
+    credentials: isEditMode ? {} : preloadedConnectorData?.credentials || {},
     config: preloadedConnectorData?.config || {},
     schema: preloadedCredentialSchema?.credentials || null,
     configurationSchema: null,
@@ -212,6 +212,7 @@ export function FederatedConnectorForm({
     configurationSchemaError: null,
     connectorError: null,
   });
+  const [credentialsModified, setCredentialsModified] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<boolean | null>(null);
@@ -340,6 +341,7 @@ export function FederatedConnectorForm({
   }
 
   const handleCredentialChange = (key: string, value: string) => {
+    setCredentialsModified(true);
     setFormState((prev) => ({
       ...prev,
       credentials: {
@@ -361,6 +363,11 @@ export function FederatedConnectorForm({
 
   const handleValidateCredentials = async () => {
     if (!formState.schema) return;
+    if (isEditMode && !credentialsModified) {
+      setSubmitMessage("Enter new credential values before validating.");
+      setSubmitSuccess(false);
+      return;
+    }
 
     setIsValidating(true);
     setSubmitMessage(null);
@@ -418,8 +425,10 @@ export function FederatedConnectorForm({
     setSubmitSuccess(null);
 
     try {
-      // Validate required fields
-      if (formState.schema) {
+      const shouldValidateCredentials = !isEditMode || credentialsModified;
+
+      // Validate required fields (skip for credentials in edit mode when unchanged)
+      if (formState.schema && shouldValidateCredentials) {
         const missingRequired = Object.entries(formState.schema)
           .filter(
             ([key, field]) => field.required && !formState.credentials[key]
@@ -449,16 +458,20 @@ export function FederatedConnectorForm({
       }
       setConfigValidationErrors({});
 
-      // Validate credentials before creating/updating
-      const validation = await validateCredentials(
-        connector,
-        formState.credentials
-      );
-      if (!validation.success) {
-        setSubmitMessage(`Credential validation failed: ${validation.message}`);
-        setSubmitSuccess(false);
-        setIsSubmitting(false);
-        return;
+      // Validate credentials before creating/updating (skip in edit mode when unchanged)
+      if (shouldValidateCredentials) {
+        const validation = await validateCredentials(
+          connector,
+          formState.credentials
+        );
+        if (!validation.success) {
+          setSubmitMessage(
+            `Credential validation failed: ${validation.message}`
+          );
+          setSubmitSuccess(false);
+          setIsSubmitting(false);
+          return;
+        }
       }
 
       // Create or update the connector
@@ -466,7 +479,7 @@ export function FederatedConnectorForm({
         isEditMode && connectorId
           ? await updateFederatedConnector(
               connectorId,
-              formState.credentials,
+              credentialsModified ? formState.credentials : null,
               formState.config
             )
           : await createFederatedConnector(
@@ -545,14 +558,16 @@ export function FederatedConnectorForm({
               id={fieldKey}
               type={fieldSpec.secret ? "password" : "text"}
               placeholder={
-                fieldSpec.example
-                  ? String(fieldSpec.example)
-                  : fieldSpec.description
+                isEditMode && !credentialsModified
+                  ? "••••••••  (leave blank to keep current value)"
+                  : fieldSpec.example
+                    ? String(fieldSpec.example)
+                    : fieldSpec.description
               }
               value={formState.credentials[fieldKey] || ""}
               onChange={(e) => handleCredentialChange(fieldKey, e.target.value)}
               className="w-96"
-              required={fieldSpec.required}
+              required={!isEditMode && fieldSpec.required}
             />
           </div>
         ))}
@@ -771,7 +786,7 @@ export function FederatedConnectorForm({
             <Badge variant="outline" className="text-xs">
               Federated
             </Badge>
-            <SimpleTooltip
+            <Tooltip
               tooltip={
                 sourceMetadata.federatedTooltip ||
                 "This is a federated connector. It will result in greater latency and lower search quality compared to regular connectors."
@@ -779,7 +794,7 @@ export function FederatedConnectorForm({
               side="bottom"
             >
               <Info className="cursor-help" size={16} />
-            </SimpleTooltip>
+            </Tooltip>
           </div>
         </div>
 
@@ -823,7 +838,7 @@ export function FederatedConnectorForm({
               Enter the credentials for this connector.
             </Text>
             <div className="space-y-4">{renderCredentialFields()}</div>
-            <Separator />
+            <Divider />
             <Text as="p" headingH3>
               Configuration
             </Text>
@@ -862,7 +877,7 @@ export function FederatedConnectorForm({
                 type="submit"
                 disabled={isSubmitting || !formState.schema}
                 className="flex"
-                leftIcon={isSubmitting ? SimpleLoader : undefined}
+                leftIcon={isSubmitting ? SvgSimpleLoader : undefined}
               >
                 {isSubmitting
                   ? isEditMode

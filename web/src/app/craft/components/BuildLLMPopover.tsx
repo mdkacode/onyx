@@ -7,18 +7,16 @@ import {
   SvgChevronRight,
   SvgPlug,
 } from "@opal/icons";
-import Text from "@/refresh-components/texts/Text";
-import Popover, { PopoverMenu } from "@/refresh-components/Popover";
-import Switch from "@/refresh-components/inputs/Switch";
-import LineItem from "@/refresh-components/buttons/LineItem";
-import { LLMProviderDescriptor } from "@/interfaces/llm";
+import { Text, Popover, PopoverMenu, LineItemButton } from "@opal/components";
+import { Switch } from "@opal/components";
+import { LLMProviderDescriptor } from "@/lib/languageModels/types";
 import {
   BuildLlmSelection,
   BUILD_MODE_PROVIDERS,
   isRecommendedModel,
 } from "@/app/craft/onboarding/constants";
 import { ToggleWarningModal } from "./ToggleWarningModal";
-import { getProviderIcon } from "@/app/admin/configuration/llm/utils";
+import { getModelIcon } from "@/lib/languageModels";
 import { Section } from "@/layouts/general-layouts";
 import {
   Accordion,
@@ -114,12 +112,12 @@ export function BuildLLMPopover({
         visibleModels.forEach((model) => {
           options.push({
             providerKey: provider.provider,
-            providerName: provider.name,
+            providerName: provider.name ?? "",
             providerDisplayName:
               provider.provider_display_name || provider.provider,
             modelName: model.name,
             displayName: model.display_name || model.name,
-            isRecommended: isRecommendedModel(provider.provider, model.name),
+            isRecommended: isRecommendedModel(model.name),
             isConfigured: true,
           });
         });
@@ -265,8 +263,10 @@ export function BuildLLMPopover({
         key={`${option.providerKey}-${option.modelName}`}
         ref={isSelected ? selectedItemRef : undefined}
       >
-        <LineItem
-          selected={isSelected}
+        <LineItemButton
+          sizePreset="main-ui"
+          variant="section"
+          state={isSelected ? "selected" : "empty"}
           description={description}
           onClick={() => applySelection(option)}
           rightChildren={
@@ -274,9 +274,8 @@ export function BuildLLMPopover({
               <SvgCheck className="h-4 w-4 stroke-action-link-05 shrink-0" />
             ) : null
           }
-        >
-          {option.displayName}
-        </LineItem>
+          title={option.displayName}
+        />
       </div>
     );
   };
@@ -304,7 +303,7 @@ export function BuildLLMPopover({
             <Section gap={0.5}>
               {/* Toggle for recommended only */}
               <div className="flex items-center justify-between py-3 gap-3 border-b border-border-01 px-1">
-                <Text secondaryBody text03>
+                <Text font="secondary-body" color="text-03">
                   Recommended Models Only
                 </Text>
                 <Switch
@@ -318,7 +317,7 @@ export function BuildLLMPopover({
                 {groupedOptions.length === 0
                   ? [
                       <div key="empty" className="py-3 px-2">
-                        <Text secondaryBody text03>
+                        <Text font="secondary-body" color="text-03">
                           No models found
                         </Text>
                       </div>,
@@ -334,7 +333,7 @@ export function BuildLLMPopover({
                             groupedOptions[0]!.options.map(renderModelItem)
                           ) : (
                             <div className="flex items-center justify-between px-2 py-2">
-                              <Text secondaryBody text03>
+                              <Text font="secondary-body" color="text-03">
                                 Not configured
                               </Text>
                               <button
@@ -365,9 +364,7 @@ export function BuildLLMPopover({
                             const isExpanded = expandedGroups.includes(
                               group.providerKey
                             );
-                            const ProviderIcon = getProviderIcon(
-                              group.providerKey
-                            );
+                            const ModelIcon = getModelIcon(group.providerKey);
 
                             return (
                               <AccordionItem
@@ -379,16 +376,17 @@ export function BuildLLMPopover({
                                 <AccordionTrigger className="flex items-center rounded-08 hover:no-underline hover:bg-background-tint-02 group [&>svg]:hidden w-full py-1">
                                   <div className="flex items-center gap-1 shrink-0">
                                     <div className="flex items-center justify-center size-5 shrink-0">
-                                      <ProviderIcon size={16} />
+                                      <ModelIcon size={16} />
                                     </div>
-                                    <Text
-                                      secondaryBody
-                                      text03
-                                      nowrap
-                                      className="px-0.5"
-                                    >
-                                      {group.displayName}
-                                    </Text>
+                                    <span className="px-0.5">
+                                      <Text
+                                        font="secondary-body"
+                                        color="text-03"
+                                        nowrap
+                                      >
+                                        {group.displayName}
+                                      </Text>
+                                    </span>
                                   </div>
                                   <div className="flex-1" />
                                   {!group.isConfigured && (
@@ -419,7 +417,10 @@ export function BuildLLMPopover({
                                       group.options.map(renderModelItem)
                                     ) : (
                                       <div className="py-1.5 px-3">
-                                        <Text secondaryBody text03>
+                                        <Text
+                                          font="secondary-body"
+                                          color="text-03"
+                                        >
                                           Not configured
                                         </Text>
                                       </div>

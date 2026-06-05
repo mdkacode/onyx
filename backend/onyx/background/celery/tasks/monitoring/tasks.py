@@ -1,6 +1,5 @@
 import json
 import time
-from collections.abc import Callable
 from datetime import timedelta
 from itertools import islice
 from typing import Any
@@ -19,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from onyx.background.celery.apps.app_base import task_logger
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_unacked_task_ids
 from onyx.background.celery.memory_monitoring import emit_process_memory
@@ -30,6 +30,7 @@ from onyx.configs.constants import OnyxRedisLocks
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.engine.sql_engine import get_session_with_shared_schema
 from onyx.db.engine.tenant_utils import get_all_tenant_ids
+from onyx.db.engine.tenant_utils import validate_tenant_id
 from onyx.db.engine.time_utils import get_db_current_time
 from onyx.db.enums import IndexingStatus
 from onyx.db.enums import SyncStatus
@@ -42,7 +43,9 @@ from onyx.db.models import UserGroup
 from onyx.db.search_settings import get_active_search_settings_list
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.redis_pool import redis_lock_dump
-from onyx.utils.logger import is_running_in_container
+from onyx.redis.tenant_redis_client import TenantRedisClient
+from onyx.utils.platform_utils import is_running_in_container
+from onyx.utils.platform_utils import is_running_in_kubernetes
 from onyx.utils.telemetry import optional_telemetry
 from onyx.utils.telemetry import RecordType
 from shared_configs.configs import MULTI_TENANT
@@ -71,12 +74,12 @@ _SYNC_START_TIME_KEY_FMT = "sync_start_time:{sync_type}:{entity_id}:{sync_record
 _SYNC_END_TIME_KEY_FMT = "sync_end_time:{sync_type}:{entity_id}:{sync_record_id}"
 
 
-def _mark_metric_as_emitted(redis_std: Redis, key: str) -> None:
+def _mark_metric_as_emitted(redis_std: TenantRedisClient, key: str) -> None:
     """Mark a metric as having been emitted by setting a Redis key with expiration"""
     redis_std.set(key, "1", ex=24 * 60 * 60)  # Expire after 1 day
 
 
-def _has_metric_been_emitted(redis_std: Redis, key: str) -> bool:
+def _has_metric_been_emitted(redis_std: TenantRedisClient, key: str) -> bool:
     """Check if a metric has been emitted by checking for existence of Redis key"""
     return bool(redis_std.exists(key))
 
@@ -184,7 +187,7 @@ def _build_connector_start_latency_metric(
     cc_pair: ConnectorCredentialPair,
     recent_attempt: IndexAttempt,
     second_most_recent_attempt: IndexAttempt | None,
-    redis_std: Redis,
+    redis_std: TenantRedisClient,
 ) -> Metric | None:
     if not recent_attempt.time_started:
         return None
@@ -242,7 +245,7 @@ def _build_connector_start_latency_metric(
 def _build_connector_final_metrics(
     cc_pair: ConnectorCredentialPair,
     recent_attempts: list[IndexAttempt],
-    redis_std: Redis,
+    redis_std: TenantRedisClient,
 ) -> list[Metric]:
     """
     Final metrics for connector index attempts:
@@ -330,7 +333,9 @@ def _build_connector_final_metrics(
     return metrics
 
 
-def _collect_connector_metrics(db_session: Session, redis_std: Redis) -> list[Metric]:
+def _collect_connector_metrics(
+    db_session: Session, redis_std: TenantRedisClient
+) -> list[Metric]:
     """Collect metrics about connector runs from the past hour"""
     one_hour_ago = get_db_current_time(db_session) - timedelta(hours=1)
 
@@ -349,6 +354,7 @@ def _collect_connector_metrics(db_session: Session, redis_std: Redis) -> list[Me
                 .filter(
                     IndexAttempt.connector_credential_pair_id == cc_pair.id,
                     IndexAttempt.search_settings_id == search_settings.id,
+                    IndexAttempt.targeted_reindex_job_id.is_(None),
                 )
                 .order_by(IndexAttempt.time_created.desc())
                 .limit(2)
@@ -429,7 +435,9 @@ def _collect_connector_metrics(db_session: Session, redis_std: Redis) -> list[Me
     return metrics
 
 
-def _collect_sync_metrics(db_session: Session, redis_std: Redis) -> list[Metric]:
+def _collect_sync_metrics(
+    db_session: Session, redis_std: TenantRedisClient
+) -> list[Metric]:
     """
     Collect metrics for document set and group syncing:
       - Success/failure status
@@ -698,31 +706,27 @@ def monitor_background_processes(self: Task, *, tenant_id: str) -> None:
         return None
 
     try:
-        # Get Redis client for Celery broker
-        redis_celery = self.app.broker_connection().channel().client  # type: ignore
         redis_std = get_redis_client()
 
-        # Define metric collection functions and their dependencies
-        metric_functions: list[Callable[[], list[Metric]]] = [
-            lambda: _collect_queue_metrics(redis_celery),
-            lambda: _collect_connector_metrics(db_session, redis_std),
-            lambda: _collect_sync_metrics(db_session, redis_std),
-        ]
+        # Collect queue metrics with broker connection
+        r_celery = celery_get_broker_client(self.app)
+        queue_metrics = _collect_queue_metrics(r_celery)
 
-        # Collect and log each metric
+        # Collect remaining metrics (no broker connection needed)
         with get_session_with_current_tenant() as db_session:
-            for metric_fn in metric_functions:
-                metrics = metric_fn()
-                for metric in metrics:
-                    # double check to make sure we aren't double-emitting metrics
-                    if metric.key is None or not _has_metric_been_emitted(
-                        redis_std, metric.key
-                    ):
-                        metric.log()
-                        metric.emit(tenant_id)
+            all_metrics: list[Metric] = queue_metrics
+            all_metrics.extend(_collect_connector_metrics(db_session, redis_std))
+            all_metrics.extend(_collect_sync_metrics(db_session, redis_std))
 
-                    if metric.key is not None:
-                        _mark_metric_as_emitted(redis_std, metric.key)
+            for metric in all_metrics:
+                if metric.key is None or not _has_metric_been_emitted(
+                    redis_std, metric.key
+                ):
+                    metric.log()
+                    metric.emit(tenant_id)
+
+                if metric.key is not None:
+                    _mark_metric_as_emitted(redis_std, metric.key)
 
         task_logger.info("Successfully collected background metrics")
     except SoftTimeLimitExceeded:
@@ -788,10 +792,20 @@ def cloud_check_alembic() -> bool | None:
             if tenant_id is None:
                 continue
 
+            # Defense in depth: get_all_tenant_ids() already filters with this
+            # regex, but PostgreSQL cannot bind a schema identifier, so we
+            # re-check at the interpolation site to keep the SQL string safe
+            # even if upstream filtering ever loosens.
+            if not validate_tenant_id(tenant_id):
+                task_logger.warning(
+                    "Skipping tenant with malformed schema name: %s", tenant_id
+                )
+                continue
+
             with get_session_with_shared_schema() as session:
                 try:
                     result = session.execute(
-                        text(f'SELECT * FROM "{tenant_id}".alembic_version LIMIT 1')
+                        text(f'SELECT * FROM "{tenant_id}".alembic_version LIMIT 1')  # noqa: S608
                     )
                     result_scalar: str | None = result.scalar_one_or_none()
                     if result_scalar is None:
@@ -890,7 +904,7 @@ def monitor_celery_queues_helper(
 ) -> None:
     """A task to monitor all celery queue lengths."""
 
-    r_celery = task.app.broker_connection().channel().client  # type: ignore
+    r_celery = celery_get_broker_client(task.app)
     n_celery = celery_get_queue_length(OnyxCeleryQueues.PRIMARY, r_celery)
     n_docfetching = celery_get_queue_length(
         OnyxCeleryQueues.CONNECTOR_DOC_FETCHING, r_celery
@@ -1008,6 +1022,11 @@ def monitor_process_memory(self: Task, *, tenant_id: str) -> None:  # noqa: ARG0
     if not is_running_in_container():
         return
 
+    # In k8s each worker runs in its own pod with an isolated pid namespace,
+    # so psutil.process_iter() only sees the local worker.
+    if is_running_in_kubernetes():
+        return
+
     try:
         # Get all supervisor-managed processes
         supervisor_processes: dict[int, str] = {}
@@ -1080,7 +1099,7 @@ def cloud_monitor_celery_pidbox(
     num_deleted = 0
 
     MAX_PIDBOX_IDLE = 24 * 3600  # 1 day in seconds
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
+    r_celery = celery_get_broker_client(self.app)
     for key in r_celery.scan_iter("*.reply.celery.pidbox"):
         key_bytes = cast(bytes, key)
         key_str = key_bytes.decode("utf-8")

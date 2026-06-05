@@ -2,8 +2,8 @@ import {
   getDefaultLlmDescriptor,
   getValidLlmDescriptorForProviders,
 } from "@/lib/hooks";
-import { structureValue } from "@/lib/llmConfig/utils";
-import { LLMProviderDescriptor } from "@/interfaces/llm";
+import { structureValue } from "@/lib/languageModels/utils";
+import { LLMProviderDescriptor } from "@/lib/languageModels/types";
 import { makeProvider } from "@tests/setup/llmProviderTestUtils";
 
 describe("LLM resolver helpers", () => {
@@ -93,6 +93,54 @@ describe("LLM resolver helpers", () => {
       name: "Default OpenAI",
       provider: "openai",
       modelName: "gpt-4o-mini",
+    });
+  });
+
+  test("prefers provider by name when multiple share the same type", () => {
+    const providers: LLMProviderDescriptor[] = [
+      makeProvider({
+        id: 1,
+        name: "Anthropic",
+        provider: "anthropic",
+        model_configurations: [
+          {
+            name: "claude-sonnet-4-5",
+            is_visible: true,
+            max_input_tokens: null,
+            supports_image_input: false,
+            supports_reasoning: false,
+          },
+        ],
+      }),
+      makeProvider({
+        id: 2,
+        name: "PersonalAnthropicToken",
+        provider: "anthropic",
+        model_configurations: [
+          {
+            name: "claude-sonnet-4-5",
+            is_visible: true,
+            max_input_tokens: null,
+            supports_image_input: false,
+            supports_reasoning: false,
+          },
+        ],
+      }),
+    ];
+
+    const descriptor = getValidLlmDescriptorForProviders(
+      structureValue(
+        "PersonalAnthropicToken",
+        "anthropic",
+        "claude-sonnet-4-5"
+      ),
+      providers
+    );
+
+    expect(descriptor).toEqual({
+      name: "PersonalAnthropicToken",
+      provider: "anthropic",
+      modelName: "claude-sonnet-4-5",
     });
   });
 

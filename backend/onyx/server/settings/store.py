@@ -1,13 +1,20 @@
 from onyx.cache.factory import get_cache_backend
+from onyx.configs.app_configs import DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB
 from onyx.configs.app_configs import DISABLE_USER_KNOWLEDGE
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
 from onyx.configs.app_configs import ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
+from onyx.configs.app_configs import HIDE_QUERY_HISTORY_FROM_ADMIN_PANEL
+from onyx.configs.app_configs import MAX_ALLOWED_UPLOAD_SIZE_MB
 from onyx.configs.app_configs import ONYX_QUERY_HISTORY_TYPE
 from onyx.configs.app_configs import SHOW_EXTRA_CONNECTORS
-from onyx.configs.app_configs import USER_FILE_MAX_UPLOAD_SIZE_MB
 from onyx.configs.constants import KV_SETTINGS_KEY
 from onyx.configs.constants import OnyxRedisLocks
 from onyx.key_value_store.factory import get_kv_store
 from onyx.key_value_store.interface import KvKeyNotFoundError
+from onyx.server.settings.models import (
+    DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB,
+)
+from onyx.server.settings.models import DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
 from onyx.server.settings.models import Settings
 from onyx.utils.logger import setup_logger
 
@@ -26,10 +33,10 @@ def load_settings() -> Settings:
         )
     except KvKeyNotFoundError:
         # Default to empty settings if no settings have been set yet
-        logger.debug(f"No settings found in KV store for key: {KV_SETTINGS_KEY}")
+        logger.debug("No settings found in KV store for key: %s", KV_SETTINGS_KEY)
         settings = Settings()
     except Exception as e:
-        logger.error(f"Error loading settings from KV store: {str(e)}")
+        logger.error("Error loading settings from KV store: %s", str(e))
         settings = Settings()
 
     cache = get_cache_backend()
@@ -42,18 +49,47 @@ def load_settings() -> Settings:
             anonymous_user_enabled = False
             cache.set(OnyxRedisLocks.ANONYMOUS_USER_ENABLED, "0", ex=SETTINGS_TTL)
     except Exception as e:
-        logger.error(f"Error loading anonymous user setting from cache: {str(e)}")
+        logger.error("Error loading anonymous user setting from cache: %s", str(e))
         anonymous_user_enabled = False
 
     settings.anonymous_user_enabled = anonymous_user_enabled
-    settings.query_history_type = ONYX_QUERY_HISTORY_TYPE
+    if settings.query_history_type is None:
+        settings.query_history_type = ONYX_QUERY_HISTORY_TYPE
 
     if DISABLE_USER_KNOWLEDGE:
         settings.user_knowledge_enabled = False
 
-    settings.user_file_max_upload_size_mb = USER_FILE_MAX_UPLOAD_SIZE_MB
     settings.show_extra_connectors = SHOW_EXTRA_CONNECTORS
     settings.opensearch_indexing_enabled = ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
+    settings.hide_query_history_from_admin_panel = HIDE_QUERY_HISTORY_FROM_ADMIN_PANEL
+
+    # Resolve context-aware defaults for token threshold.
+    # None = admin hasn't set a value yet → use context-aware default.
+    # 0 = admin explicitly chose "no limit" → preserve as-is.
+    if settings.file_token_count_threshold_k is None:
+        settings.file_token_count_threshold_k = (
+            DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB
+            if DISABLE_VECTOR_DB
+            else DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
+        )
+
+    # Upload size: 0 and None are treated as "unset" (not "no limit") →
+    # fall back to min(configured default, hard ceiling).
+    if not settings.user_file_max_upload_size_mb:
+        settings.user_file_max_upload_size_mb = min(
+            DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB,
+            MAX_ALLOWED_UPLOAD_SIZE_MB,
+        )
+
+    # Clamp to env ceiling so stale KV values are capped even if the
+    # operator lowered MAX_ALLOWED_UPLOAD_SIZE_MB after a higher value
+    # was already saved (api.py only guards new writes).
+    if (
+        settings.user_file_max_upload_size_mb > 0
+        and settings.user_file_max_upload_size_mb > MAX_ALLOWED_UPLOAD_SIZE_MB
+    ):
+        settings.user_file_max_upload_size_mb = MAX_ALLOWED_UPLOAD_SIZE_MB
+
     return settings
 
 

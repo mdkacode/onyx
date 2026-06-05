@@ -1,5 +1,6 @@
 # These are helper objects for tracking the keys we need to write in redis
 import json
+import threading
 from typing import Any
 from typing import cast
 
@@ -7,7 +8,58 @@ from celery import Celery
 from redis import Redis
 
 from onyx.background.celery.configs.base import CELERY_SEPARATOR
+from onyx.configs.app_configs import REDIS_HEALTH_CHECK_INTERVAL
 from onyx.configs.constants import OnyxCeleryPriority
+from onyx.configs.constants import REDIS_SOCKET_KEEPALIVE_OPTIONS
+
+_broker_client: Redis | None = None
+_broker_url: str | None = None
+_broker_client_lock = threading.Lock()
+
+
+def celery_get_broker_client(app: Celery) -> Redis:
+    """Return a shared Redis client connected to the Celery broker DB.
+
+    Uses a module-level singleton so all tasks on a worker share one
+    connection instead of creating a new one per call. The client
+    connects directly to the broker Redis DB (parsed from the broker URL).
+
+    Thread-safe via lock — safe for use in Celery thread-pool workers.
+
+    Usage:
+        r_celery = celery_get_broker_client(self.app)
+        length = celery_get_queue_length(queue, r_celery)
+    """
+    global _broker_client, _broker_url
+    with _broker_client_lock:
+        url = app.conf.broker_url
+        if _broker_client is not None and _broker_url == url:
+            try:
+                _broker_client.ping()
+                return _broker_client
+            except Exception:
+                try:
+                    _broker_client.close()
+                except Exception:
+                    pass
+                _broker_client = None
+        elif _broker_client is not None:
+            try:
+                _broker_client.close()
+            except Exception:
+                pass
+            _broker_client = None
+
+        _broker_url = url
+        _broker_client = Redis.from_url(
+            url,
+            decode_responses=False,
+            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
+            socket_keepalive=True,
+            socket_keepalive_options=REDIS_SOCKET_KEEPALIVE_OPTIONS,
+            retry_on_timeout=True,
+        )
+        return _broker_client
 
 
 def celery_get_unacked_length(r: Redis) -> int:
@@ -28,14 +80,21 @@ def celery_get_unacked_task_ids(queue: str, r: Redis) -> set[str]:
 
     Unacked entries belonging to the indexing queues are "prefetched", so this gives
     us crucial visibility as to what tasks are in that state.
+
+    Uses a bytes-substring pre-filter to skip the json.loads call for entries
+    whose serialized message doesn't even contain the queue name. With a large
+    unacked backlog (10k+ entries) this avoids parsing tens of megabytes of
+    JSON per call — the dominant memory cost on the monitoring worker.
     """
     tasks: set[str] = set()
+    queue_marker = f'"{queue}"'.encode("utf-8")
 
     for _, v in r.hscan_iter("unacked"):
         v_bytes = cast(bytes, v)
-        v_str = v_bytes.decode("utf-8")
-        task = json.loads(v_str)
+        if queue_marker not in v_bytes:
+            continue
 
+        task = json.loads(v_bytes)
         task_description = task[0]
         task_queue = task[2]
 
@@ -126,7 +185,7 @@ def celery_inspect_get_workers(name_filter: str | None, app: Celery) -> list[str
 
     # filter for and create an indexing specific inspect object
     inspect = app.control.inspect()
-    workers: dict[str, Any] = inspect.ping()  # type: ignore
+    workers: dict[str, Any] = inspect.ping()  # ty: ignore[invalid-assignment]
     if workers:
         for worker_name in list(workers.keys()):
             # if the name filter not set, return all worker names
@@ -155,7 +214,9 @@ def celery_inspect_get_reserved(worker_names: list[str], app: Celery) -> set[str
     inspect = app.control.inspect(destination=worker_names)
 
     # get the list of reserved tasks
-    reserved_tasks: dict[str, list] | None = inspect.reserved()  # type: ignore
+    reserved_tasks: dict[str, list] | None = (  # ty: ignore[invalid-assignment]
+        inspect.reserved()
+    )
     if reserved_tasks:
         for _, task_list in reserved_tasks.items():
             for task in task_list:
@@ -176,7 +237,9 @@ def celery_inspect_get_active(worker_names: list[str], app: Celery) -> set[str]:
     inspect = app.control.inspect(destination=worker_names)
 
     # get the list of reserved tasks
-    active_tasks: dict[str, list] | None = inspect.active()  # type: ignore
+    active_tasks: dict[str, list] | None = (  # ty: ignore[invalid-assignment]
+        inspect.active()
+    )
     if active_tasks:
         for _, task_list in active_tasks.items():
             for task in task_list:

@@ -10,9 +10,10 @@ import {
 import useSWRInfinite from "swr/infinite";
 import { ChatSession, ChatSessionSharedStatus } from "@/app/app/interfaces";
 import { errorHandlingFetcher } from "@/lib/fetcher";
-import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
+import { SWR_KEYS } from "@/lib/swr-keys";
+import { MinimalAgent } from "@/lib/agents/types";
 import useAppFocus from "./useAppFocus";
-import { useAgents } from "./useAgents";
+import { useAgents } from "@/lib/agents/hooks";
 import { DEFAULT_AGENT_ID } from "@/lib/constants";
 
 const PAGE_SIZE = 50;
@@ -33,7 +34,7 @@ interface UseChatSessionsOutput {
   chatSessions: ChatSession[];
   currentChatSessionId: string | null;
   currentChatSession: ChatSession | null;
-  agentForCurrentChatSession: MinimalPersonaSnapshot | null;
+  agentForCurrentChatSession: MinimalAgent | null;
   isLoading: boolean;
   error: any;
   refreshChatSessions: () => Promise<ChatSessionsResponse[] | undefined>;
@@ -108,7 +109,7 @@ function usePendingSessions(): ChatSession[] {
 
 function useFindAgentForCurrentChatSession(
   currentChatSession: ChatSession | null
-): MinimalPersonaSnapshot | null {
+): MinimalAgent | null {
   const { agents } = useAgents();
   const appFocus = useAppFocus();
 
@@ -146,7 +147,7 @@ export default function useChatSessions(): UseChatSessionsOutput {
 
     // First page — no cursor
     if (pageIndex === 0) {
-      return `/api/chat/get-user-chat-sessions?page_size=${PAGE_SIZE}`;
+      return `${SWR_KEYS.chatSessions}?page_size=${PAGE_SIZE}`;
     }
 
     // Subsequent pages — cursor from the last session of the previous page
@@ -158,7 +159,7 @@ export default function useChatSessions(): UseChatSessionsOutput {
       page_size: PAGE_SIZE.toString(),
       before: lastSession.time_updated,
     });
-    return `/api/chat/get-user-chat-sessions?${params.toString()}`;
+    return `${SWR_KEYS.chatSessions}?${params.toString()}`;
   };
 
   const { data, error, setSize, mutate } = useSWRInfinite<ChatSessionsResponse>(
@@ -166,6 +167,7 @@ export default function useChatSessions(): UseChatSessionsOutput {
     errorHandlingFetcher,
     {
       revalidateOnFocus: false,
+      revalidateIfStale: false,
       revalidateFirstPage: true,
       revalidateAll: false,
       dedupingInterval: 30000,

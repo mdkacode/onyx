@@ -3,7 +3,7 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { KeyedMutator } from "swr";
 import MCPActionCard from "@/sections/actions/MCPActionCard";
-import Actionbar from "@/sections/actions/Actionbar";
+import AdminListHeader from "@/sections/admin/AdminListHeader";
 import ActionCardSkeleton from "@/sections/actions/skeleton/ActionCardSkeleton";
 import { getActionIcon } from "@/lib/tools/mcpUtils";
 import {
@@ -486,14 +486,14 @@ export default function MCPPageContent() {
         />
       )}
 
-      <div className="flex-shrink-0 mb-4">
-        <Actionbar
-          hasActions={isLoading || mcpServers.length > 0}
+      <div className="shrink-0 mb-4">
+        <AdminListHeader
+          hasItems={isLoading || mcpServers.length > 0}
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
-          onAddAction={handleAddServer}
-          buttonText="Add MCP Server"
-          barText="Connect MCP server to add custom actions."
+          onAction={handleAddServer}
+          actionLabel="Add MCP Server"
+          emptyStateText="Connect MCP server to add custom actions."
         />
       </div>
 

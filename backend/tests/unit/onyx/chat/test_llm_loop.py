@@ -278,54 +278,41 @@ class TestConstructMessageHistory:
         assert result[4] == user_msg2  # Last user message
         assert result[5] == assistant_with_tool  # After last user message
 
-    def test_project_images_attached_to_last_user_message(self) -> None:
-        """Test that project images are attached to the last user message."""
-        system_prompt = create_message("System", MessageType.SYSTEM, 10)
-        user_msg1 = create_message("First", MessageType.USER, 5)
-        user_msg2 = create_message("Second", MessageType.USER, 5)
-
-        simple_chat_history = [user_msg1, user_msg2]
-        context_files = create_context_files(num_files=0, num_images=2)
-
-        result = construct_message_history(
-            system_prompt=system_prompt,
-            custom_agent_prompt=None,
-            simple_chat_history=simple_chat_history,
-            reminder_message=None,
-            context_files=context_files,
-            available_tokens=1000,
-        )
-
-        # Last message should have the project images
-        last_message = result[-1]
-        assert last_message.message == "Second"
-        assert last_message.image_files is not None
-        assert len(last_message.image_files) == 2
-        assert last_message.image_files[0].file_id == "image_0"
-        assert last_message.image_files[1].file_id == "image_1"
-
-    def test_project_images_preserve_existing_images(self) -> None:
-        """Test that project images are appended to existing images on the user message."""
+    def test_construct_message_history_does_not_duplicate_project_images(
+        self,
+    ) -> None:
+        """Project images are attached upstream in convert_chat_history; this
+        function must not re-attach them. Simulates the realistic state where
+        the last user message in simple_chat_history already carries the
+        project images, and asserts they appear exactly once."""
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
 
-        # Create a user message with existing images
-        existing_image = ChatLoadedFile(
-            file_id="existing_image",
+        project_image = ChatLoadedFile(
+            file_id="project_image",
             content=b"",
             file_type=ChatFileType.IMAGE,
-            filename="existing.png",
+            filename="project.png",
             content_text=None,
             token_count=50,
         )
+        # Simulate convert_chat_history's output: the last user message already
+        # has the project image attached.
         user_msg = ChatMessageSimple(
-            message="Message with image",
+            message="What is in this image?",
             token_count=5,
             message_type=MessageType.USER,
-            image_files=[existing_image],
+            image_files=[project_image],
         )
 
         simple_chat_history = [user_msg]
-        context_files = create_context_files(num_files=0, num_images=1)
+        context_files = ExtractedContextFiles(
+            file_texts=[],
+            image_files=[project_image],
+            use_as_search_filter=False,
+            total_token_count=0,
+            file_metadata=[],
+            uncapped_token_count=0,
+        )
 
         result = construct_message_history(
             system_prompt=system_prompt,
@@ -336,12 +323,11 @@ class TestConstructMessageHistory:
             available_tokens=1000,
         )
 
-        # Last message should have both existing and project images
         last_message = result[-1]
+        assert last_message.message == "What is in this image?"
         assert last_message.image_files is not None
-        assert len(last_message.image_files) == 2
-        assert last_message.image_files[0].file_id == "existing_image"
-        assert last_message.image_files[1].file_id == "image_0"
+        assert len(last_message.image_files) == 1
+        assert last_message.image_files[0].file_id == "project_image"
 
     def test_truncation_from_top(self) -> None:
         """Test that history is truncated from the top when token budget is exceeded."""
@@ -644,6 +630,92 @@ class TestConstructMessageHistory:
         assert "Project file 0 content" in project_message.message
         assert "Project file 1 content" in project_message.message
 
+    def test_file_metadata_for_tool_produces_message(self) -> None:
+        """When context_files has file_metadata_for_tool, a metadata listing
+        message should be injected into the history."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("Analyze the spreadsheet", MessageType.USER, 5)
+
+        context_files = ExtractedContextFiles(
+            file_texts=[],
+            image_files=[],
+            use_as_search_filter=False,
+            total_token_count=0,
+            file_metadata=[],
+            uncapped_token_count=0,
+            file_metadata_for_tool=[
+                FileToolMetadata(
+                    file_id="xlsx-1",
+                    filename="report.xlsx",
+                    approx_char_count=100000,
+                ),
+            ],
+        )
+
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=[user_msg],
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=1000,
+            token_counter=_simple_token_counter,
+        )
+
+        # Should have: system, tool_metadata_message, user
+        assert len(result) == 3
+        metadata_msg = result[1]
+        assert metadata_msg.message_type == MessageType.USER
+        assert "report.xlsx" in metadata_msg.message
+        assert "xlsx-1" in metadata_msg.message
+
+    def test_metadata_only_and_text_files_both_present(self) -> None:
+        """When both text content and tool metadata are present, both messages
+        should appear in the history."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("Summarize everything", MessageType.USER, 5)
+
+        context_files = ExtractedContextFiles(
+            file_texts=["Text file content here"],
+            image_files=[],
+            use_as_search_filter=False,
+            total_token_count=100,
+            file_metadata=[
+                ContextFileMetadata(
+                    file_id="txt-1",
+                    filename="notes.txt",
+                    file_content="Text file content here",
+                ),
+            ],
+            uncapped_token_count=100,
+            file_metadata_for_tool=[
+                FileToolMetadata(
+                    file_id="xlsx-1",
+                    filename="data.xlsx",
+                    approx_char_count=50000,
+                ),
+            ],
+        )
+
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=[user_msg],
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=2000,
+            token_counter=_simple_token_counter,
+        )
+
+        # Should have: system, context_files_message, tool_metadata_message, user
+        assert len(result) == 4
+        # Context files message (text content)
+        assert "documents" in result[1].message
+        assert "Text file content here" in result[1].message
+        # Tool metadata message
+        assert "data.xlsx" in result[2].message
+        assert result[3] == user_msg
+
 
 def _simple_token_counter(text: str) -> int:
     """Approximate token counter for tests (~4 chars per token)."""
@@ -725,9 +797,9 @@ class TestForgottenFileMetadata:
         )
 
         forgotten = self._find_forgotten_message(result)
-        assert (
-            forgotten is None
-        ), "Should not inject forgotten-files when file is in context"
+        assert forgotten is None, (
+            "Should not inject forgotten-files when file is in context"
+        )
         # The file message itself should still be present
         assert any(m.file_id == "file-abc" for m in result)
 
@@ -796,9 +868,9 @@ class TestForgottenFileMetadata:
         )
 
         forgotten = self._find_forgotten_message(result)
-        assert (
-            forgotten is not None
-        ), "Orphaned file metadata should trigger forgotten-files message"
+        assert forgotten is not None, (
+            "Orphaned file metadata should trigger forgotten-files message"
+        )
         assert "moby_dick.txt" in forgotten.message
         assert "file-abc" in forgotten.message
 
@@ -867,9 +939,9 @@ class TestForgottenFileMetadata:
         )
 
         forgotten = self._find_forgotten_message(result)
-        assert (
-            forgotten is None
-        ), "No forgotten-files message when metadata dict is None"
+        assert forgotten is None, (
+            "No forgotten-files message when metadata dict is None"
+        )
 
     # ------------------------------------------------------------------
     # Case 6: orphaned metadata with multiple files, all summarized away
@@ -933,9 +1005,9 @@ class TestForgottenFileMetadata:
             )
 
             forgotten = self._find_forgotten_message(result)
-            assert (
-                forgotten is not None
-            ), f"Turn {turn}: forgotten-files message must persist every turn"
+            assert forgotten is not None, (
+                f"Turn {turn}: forgotten-files message must persist every turn"
+            )
             assert "moby_dick.txt" in forgotten.message
 
 

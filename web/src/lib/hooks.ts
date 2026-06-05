@@ -23,35 +23,34 @@ import {
 } from "react";
 import { DateRangePickerValue } from "@/components/dateRangeSelectors/AdminDateRangeSelector";
 import { SourceMetadata } from "./search/interfaces";
-import { parseLlmDescriptor } from "./llmConfig/utils";
+import { parseLlmDescriptor } from "@/lib/languageModels/utils";
 import { ChatSession } from "@/app/app/interfaces";
 import { Credential } from "./connectors/credentials";
 import { SettingsContext } from "@/providers/SettingsProvider";
+import { MinimalAgent } from "@/lib/agents/types";
 import {
-  MinimalPersonaSnapshot,
-  PersonaLabel,
-} from "@/app/admin/agents/interfaces";
-import { DefaultModel, LLMProviderDescriptor } from "@/interfaces/llm";
-import { isAnthropic } from "@/app/admin/configuration/llm/utils";
+  DefaultModel,
+  LLMProviderDescriptor,
+} from "@/lib/languageModels/types";
+import { isAnthropic } from "@/lib/languageModels/svc";
 import { getSourceMetadataForSources } from "./sources";
 import { AuthType, NEXT_PUBLIC_CLOUD_ENABLED } from "./constants";
 import { useUser } from "@/providers/UserProvider";
 import { SEARCH_TOOL_ID } from "@/app/app/components/tools/constants";
 import { updateTemperatureOverrideForChatSession } from "@/app/app/services/lib";
-import { useLLMProviders } from "@/hooks/useLLMProviders";
-
-const CREDENTIAL_URL = "/api/manage/admin/credential";
+import { useLLMProviders } from "@/hooks/useLanguageModels";
+import { SWR_KEYS } from "@/lib/swr-keys";
 
 export const usePublicCredentials = () => {
   const { mutate } = useSWRConfig();
   const swrResponse = useSWR<Credential<any>[]>(
-    CREDENTIAL_URL,
+    SWR_KEYS.adminCredentials,
     errorHandlingFetcher
   );
 
   return {
     ...swrResponse,
-    refreshCredentials: () => mutate(CREDENTIAL_URL),
+    refreshCredentials: () => mutate(SWR_KEYS.adminCredentials),
   };
 };
 
@@ -86,9 +85,6 @@ export const useObjectState = <T>(
   };
   return [state, set];
 };
-
-const INDEXING_STATUS_URL = "/api/manage/admin/connector/indexing-status";
-const CONNECTOR_STATUS_URL = "/api/manage/admin/connector/status";
 
 export const useConnectorIndexingStatusWithPagination = (
   filters: Omit<IndexingStatusRequest, "source" | "source_to_page"> = {},
@@ -126,7 +122,7 @@ export const useConnectorIndexingStatusWithPagination = (
   );
 
   const swrKey = enabled
-    ? [INDEXING_STATUS_URL, JSON.stringify(mainRequest)]
+    ? [SWR_KEYS.indexingStatus, JSON.stringify(mainRequest)]
     : null;
 
   // Main data fetch with auto-refresh
@@ -215,7 +211,7 @@ export const useConnectorStatus = (
   enabled: boolean = true
 ) => {
   const { mutate } = useSWRConfig();
-  const url = CONNECTOR_STATUS_URL;
+  const url = SWR_KEYS.adminConnectorStatus;
   const swrResponse = useSWR<ConnectorStatus<any, any>[]>(
     enabled ? url : null,
     errorHandlingFetcher,
@@ -229,7 +225,7 @@ export const useConnectorStatus = (
 };
 
 export const useBasicConnectorStatus = (enabled: boolean = true) => {
-  const url = "/api/manage/connector-status";
+  const url = SWR_KEYS.connectorStatus;
   const swrResponse = useSWR<CCPairBasicInfo[]>(
     enabled ? url : null,
     errorHandlingFetcher
@@ -242,7 +238,7 @@ export const useBasicConnectorStatus = (enabled: boolean = true) => {
 
 export const useFederatedConnectors = () => {
   const { mutate } = useSWRConfig();
-  const url = "/api/federated";
+  const url = SWR_KEYS.federatedConnectors;
   const swrResponse = useSWR<FederatedConnectorDetail[]>(
     url,
     errorHandlingFetcher
@@ -251,85 +247,6 @@ export const useFederatedConnectors = () => {
   return {
     ...swrResponse,
     refreshFederatedConnectors: () => mutate(url),
-  };
-};
-
-export const useLabels = () => {
-  const { mutate } = useSWRConfig();
-  const { data: labels, error } = useSWR<PersonaLabel[]>(
-    "/api/persona/labels",
-    errorHandlingFetcher
-  );
-
-  const refreshLabels = async () => {
-    return mutate("/api/persona/labels");
-  };
-
-  const createLabel = async (name: string): Promise<PersonaLabel | null> => {
-    const response = await fetch("/api/persona/labels", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const newLabel: PersonaLabel = await response.json();
-    mutate(
-      "/api/persona/labels",
-      (currentLabels: PersonaLabel[] | undefined) => [
-        ...(currentLabels || []),
-        newLabel,
-      ],
-      false
-    );
-    return newLabel;
-  };
-
-  const updateLabel = async (id: number, name: string) => {
-    const response = await fetch(`/api/admin/persona/label/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label_name: name }),
-    });
-
-    if (response.ok) {
-      mutate(
-        "/api/persona/labels",
-        labels?.map((label) => (label.id === id ? { ...label, name } : label)),
-        false
-      );
-    }
-
-    return response;
-  };
-
-  const deleteLabel = async (id: number) => {
-    const response = await fetch(`/api/admin/persona/label/${id}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-    });
-
-    if (response.ok) {
-      mutate(
-        "/api/persona/labels",
-        labels?.filter((label) => label.id !== id),
-        false
-      );
-    }
-
-    return response;
-  };
-
-  return {
-    labels,
-    error,
-    refreshLabels,
-    createLabel,
-    updateLabel,
-    deleteLabel,
   };
 };
 
@@ -492,7 +409,7 @@ export interface LlmManager {
   updateModelOverrideBasedOnChatSession: (chatSession?: ChatSession) => void;
   imageFilesPresent: boolean;
   updateImageFilesPresent: (present: boolean) => void;
-  liveAgent: MinimalPersonaSnapshot | null;
+  liveAgent: MinimalAgent | null;
   maxTemperature: number;
   llmProviders: LLMProviderDescriptor[] | undefined;
   isLoadingProviders: boolean;
@@ -548,7 +465,7 @@ export function getDefaultLlmDescriptor(
     const provider = llmProviders.find((p) => p.id === defaultText.provider_id);
     if (provider) {
       return {
-        name: provider.name,
+        name: provider.name ?? "",
         provider: provider.provider,
         modelName: defaultText.model_name,
       };
@@ -563,7 +480,7 @@ export function getDefaultLlmDescriptor(
       (m) => m.is_visible
     );
     return {
-      name: firstLlmProvider.name,
+      name: firstLlmProvider.name ?? "",
       provider: firstLlmProvider.provider,
       modelName: firstModel?.name ?? "",
     };
@@ -593,7 +510,7 @@ export function getValidLlmDescriptorForProviders(
       if (provider) {
         return {
           modelName: modelName,
-          name: provider.name,
+          name: provider.name ?? "",
           provider: provider.provider,
         };
       }
@@ -603,17 +520,20 @@ export function getValidLlmDescriptorForProviders(
     // This ensures we don't incorrectly match a model to the wrong provider
     // when the same model name exists across multiple providers (e.g., gpt-5 in Azure and OpenAI)
     if (model.provider && model.provider.length > 0) {
-      const matchingProvider = llmProviders.find(
-        (p) =>
-          p.provider === model.provider &&
-          p.model_configurations
-            .map((modelConfiguration) => modelConfiguration.name)
-            .includes(model.modelName)
+      const hasModel = (p: LLMProviderDescriptor) =>
+        p.model_configurations.some((mc) => mc.name === model.modelName);
+      const typeMatches = llmProviders.filter(
+        (p) => p.provider === model.provider && hasModel(p)
       );
+      // When multiple providers share the same type (e.g., two "anthropic"
+      // providers with different API keys), prefer the one whose name matches
+      // the user's explicit selection to avoid silently switching providers.
+      const matchingProvider =
+        typeMatches.find((p) => p.name === model.name) ?? typeMatches[0];
       if (matchingProvider) {
         return {
           ...model,
-          name: matchingProvider.name,
+          name: matchingProvider.name ?? "",
           provider: matchingProvider.provider,
         };
       }
@@ -627,7 +547,11 @@ export function getValidLlmDescriptorForProviders(
       );
 
       if (provider) {
-        return { ...model, provider: provider.provider, name: provider.name };
+        return {
+          ...model,
+          provider: provider.provider,
+          name: provider.name ?? "",
+        };
       }
     }
   }
@@ -644,7 +568,7 @@ export function getValidLlmDescriptorForProviders(
 
 export function useLlmManager(
   currentChatSession?: ChatSession,
-  liveAgent?: MinimalPersonaSnapshot
+  liveAgent?: MinimalAgent
 ): LlmManager {
   const { user } = useUser();
 
@@ -672,7 +596,8 @@ export function useLlmManager(
   const [userHasManuallyOverriddenLLM, setUserHasManuallyOverriddenLLM] =
     useState(false);
   const [chatSession, setChatSession] = useState<ChatSession | null>(null);
-  const [currentLlm, setCurrentLlm] = useState<LlmDescriptor>({
+  // Manual override value — only used when userHasManuallyOverriddenLLM is true
+  const [manualLlm, setManualLlm] = useState<LlmDescriptor>({
     name: "",
     provider: "",
     modelName: "",
@@ -694,54 +619,88 @@ export function useLlmManager(
     prevAgentIdRef.current = liveAgent?.id;
   }, [liveAgent?.id]);
 
-  const llmUpdate = () => {
-    /* Should be called when the live assistant or current chat session changes */
-
-    // Don't update if providers haven't loaded yet (undefined/null)
-    // Empty arrays are valid (user has no provider access for this assistant)
-    if (llmProviders === undefined || llmProviders === null) {
-      return;
+  // Clear manual override when arriving at a *different* existing session
+  // from any previously-seen defined session. Tracks only the last
+  // *defined* session id so a round-trip through new-chat (A → undefined
+  // → B) still resets, while A → undefined (new-chat) preserves it.
+  const prevDefinedSessionIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const nextId = currentChatSession?.id;
+    if (
+      nextId !== undefined &&
+      prevDefinedSessionIdRef.current !== undefined &&
+      nextId !== prevDefinedSessionIdRef.current
+    ) {
+      setUserHasManuallyOverriddenLLM(false);
     }
-
-    // separate function so we can `return` to break out
-    const _llmUpdate = () => {
-      // if the user has overridden in this session and just switched to a brand
-      // new session, use their manually specified model
-      if (userHasManuallyOverriddenLLM && !currentChatSession) {
-        return;
-      }
-
-      if (currentChatSession?.current_alternate_model) {
-        setCurrentLlm(
-          getValidLlmDescriptor(currentChatSession.current_alternate_model)
-        );
-      } else if (liveAgent?.llm_model_version_override) {
-        setCurrentLlm(
-          getValidLlmDescriptor(liveAgent.llm_model_version_override)
-        );
-      } else if (userHasManuallyOverriddenLLM) {
-        // if the user has an override and there's nothing special about the
-        // current chat session, use the override
-        return;
-      } else if (user?.preferences?.default_model) {
-        setCurrentLlm(getValidLlmDescriptor(user.preferences.default_model));
-      } else {
-        const defaultLlm = getDefaultLlmDescriptor(llmProviders, defaultText);
-        if (defaultLlm) {
-          setCurrentLlm(defaultLlm);
-        }
-      }
-    };
-
-    _llmUpdate();
-    setChatSession(currentChatSession || null);
-  };
+    if (nextId !== undefined) {
+      prevDefinedSessionIdRef.current = nextId;
+    }
+  }, [currentChatSession?.id]);
 
   function getValidLlmDescriptor(
     modelName: string | null | undefined
   ): LlmDescriptor {
     return getValidLlmDescriptorForProviders(modelName, llmProviders);
   }
+
+  // Compute the resolved LLM synchronously so it's never one render behind.
+  // This replaces the old llmUpdate() effect for model resolution.
+  // Wrapped with a ref for referential stability — returns the same object
+  // when the resolved name/provider/modelName haven't actually changed,
+  // preventing unnecessary re-creation of downstream callbacks (e.g. onSubmit).
+  const prevLlmRef = useRef<LlmDescriptor>({
+    name: "",
+    provider: "",
+    modelName: "",
+  });
+  const currentLlm = useMemo((): LlmDescriptor => {
+    let resolved: LlmDescriptor;
+
+    if (llmProviders === undefined || llmProviders === null) {
+      resolved = manualLlm;
+    } else if (userHasManuallyOverriddenLLM) {
+      // Manual override wins over session's `current_alternate_model`.
+      // Cleared on cross-session navigation by the effect above.
+      resolved = manualLlm;
+    } else if (currentChatSession?.current_alternate_model) {
+      resolved = getValidLlmDescriptorForProviders(
+        currentChatSession.current_alternate_model,
+        llmProviders
+      );
+    } else if (user?.preferences?.default_model) {
+      resolved = getValidLlmDescriptorForProviders(
+        user.preferences.default_model,
+        llmProviders
+      );
+    } else {
+      resolved =
+        getDefaultLlmDescriptor(llmProviders, defaultText) ?? manualLlm;
+    }
+
+    const prev = prevLlmRef.current;
+    if (
+      prev.name === resolved.name &&
+      prev.provider === resolved.provider &&
+      prev.modelName === resolved.modelName
+    ) {
+      return prev;
+    }
+    prevLlmRef.current = resolved;
+    return resolved;
+  }, [
+    llmProviders,
+    defaultText,
+    currentChatSession,
+    userHasManuallyOverriddenLLM,
+    manualLlm,
+    user?.preferences?.default_model,
+  ]);
+
+  // Keep chatSession state in sync (used by temperature effect)
+  useEffect(() => {
+    setChatSession(currentChatSession || null);
+  }, [currentChatSession]);
 
   const [imageFilesPresent, setImageFilesPresent] = useState(false);
 
@@ -751,18 +710,18 @@ export function useLlmManager(
 
   // Manually set the LLM
   const updateCurrentLlm = (newLlm: LlmDescriptor) => {
-    setCurrentLlm(newLlm);
+    setManualLlm(newLlm);
     setUserHasManuallyOverriddenLLM(true);
   };
 
   const updateCurrentLlmToModelName = (modelName: string) => {
-    setCurrentLlm(getValidLlmDescriptor(modelName));
+    setManualLlm(getValidLlmDescriptor(modelName));
     setUserHasManuallyOverriddenLLM(true);
   };
 
   const updateModelOverrideBasedOnChatSession = (chatSession?: ChatSession) => {
     if (chatSession && chatSession.current_alternate_model?.length > 0) {
-      setCurrentLlm(getValidLlmDescriptor(chatSession.current_alternate_model));
+      setManualLlm(getValidLlmDescriptor(chatSession.current_alternate_model));
     }
   };
 
@@ -779,7 +738,9 @@ export function useLlmManager(
         currentChatSession.current_temperature_override,
         isAnthropicModel ? 1.0 : 2.0
       );
-    } else if (liveAgent?.tools.some((tool) => tool.name === SEARCH_TOOL_ID)) {
+    } else if (
+      liveAgent?.tools.some((tool) => tool.in_code_tool_id === SEARCH_TOOL_ID)
+    ) {
       return 0;
     }
     return 0.5;
@@ -812,8 +773,6 @@ export function useLlmManager(
   }, [currentLlm]);
 
   useEffect(() => {
-    llmUpdate();
-
     if (!chatSession && currentChatSession) {
       if (temperature) {
         updateTemperatureOverrideForChatSession(
@@ -826,7 +785,9 @@ export function useLlmManager(
 
     if (currentChatSession?.current_temperature_override) {
       setTemperature(currentChatSession.current_temperature_override);
-    } else if (liveAgent?.tools.some((tool) => tool.name === SEARCH_TOOL_ID)) {
+    } else if (
+      liveAgent?.tools.some((tool) => tool.in_code_tool_id === SEARCH_TOOL_ID)
+    ) {
       setTemperature(0);
     } else {
       setTemperature(0.5);
@@ -873,7 +834,7 @@ export function useLlmManager(
 
 export function useAuthType(): AuthType | null {
   const { data, error } = useSWR<{ auth_type: AuthType }>(
-    "/api/auth/type",
+    SWR_KEYS.authType,
     errorHandlingFetcher
   );
 
@@ -892,8 +853,6 @@ export function useAuthType(): AuthType | null {
 EE Only APIs
 */
 
-const USER_GROUP_URL = "/api/manage/admin/user-group";
-
 export const useUserGroups = (): {
   data: UserGroup[] | undefined;
   isLoading: boolean;
@@ -908,11 +867,11 @@ export const useUserGroups = (): {
     combinedSettings.enterpriseSettings !== null;
 
   const swrResponse = useSWR<UserGroup[]>(
-    isPaidEnterpriseFeaturesEnabled ? USER_GROUP_URL : null,
+    isPaidEnterpriseFeaturesEnabled ? SWR_KEYS.adminUserGroups : null,
     errorHandlingFetcher
   );
 
-  const refreshUserGroups = () => mutate(USER_GROUP_URL);
+  const refreshUserGroups = () => mutate(SWR_KEYS.adminUserGroups);
 
   if (isLoading) {
     return {
@@ -942,7 +901,7 @@ export const fetchConnectorIndexingStatus = async (
   request: IndexingStatusRequest = {},
   sourcePages: Record<ValidSources, number> | null = null
 ): Promise<ConnectorIndexingStatusLiteResponse[]> => {
-  const response = await fetch(INDEXING_STATUS_URL, {
+  const response = await fetch(SWR_KEYS.indexingStatus, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1117,6 +1076,16 @@ export function useSourcePreferences({
     sourcesInitialized,
     setSelectedSources,
   ]);
+
+  // Re-initialize when the available source set changes (e.g. switching agents).
+  const prevSourcesKey = useRef(availableSources.join(","));
+  useEffect(() => {
+    const key = availableSources.join(",");
+    if (key !== prevSourcesKey.current) {
+      prevSourcesKey.current = key;
+      setSourcesInitialized(false);
+    }
+  }, [availableSources]);
 
   const enableSources = (sources: SourceMetadata[]) => {
     setSelectedSources([...sources]);

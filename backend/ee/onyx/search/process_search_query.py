@@ -19,7 +19,7 @@ from onyx.context.search.pipeline import search_pipeline
 from onyx.db.models import User
 from onyx.db.search_settings import get_current_search_settings
 from onyx.document_index.factory import get_default_document_index
-from onyx.document_index.interfaces import DocumentIndex
+from onyx.document_index.interfaces_new import DocumentIndex
 from onyx.llm.factory import get_default_llm
 from onyx.secondary_llm_flows.document_filter import select_sections_for_expansion
 from onyx.tools.tool_implementations.search.search_utils import (
@@ -44,19 +44,21 @@ def _run_single_search(
     user: User,
     db_session: Session,
     num_hits: int | None = None,
+    hybrid_alpha: float | None = None,
 ) -> list[InferenceChunk]:
     """Execute a single search query and return chunks."""
     chunk_search_request = ChunkSearchRequest(
         query=query,
         user_selected_filters=filters,
         limit=num_hits,
+        hybrid_alpha=hybrid_alpha,
     )
 
     return search_pipeline(
         chunk_search_request=chunk_search_request,
         document_index=document_index,
         user=user,
-        persona=None,  # No persona for direct search
+        persona_search_info=None,
         db_session=db_session,
     )
 
@@ -74,7 +76,7 @@ def stream_search_query(
     Core search function that yields streaming packets.
     Used by both streaming and non-streaming endpoints.
     """
-    # Get document index
+    # Get document index.
     search_settings = get_current_search_settings(db_session)
     # This flow is for search so we do not get all indices.
     document_index = get_default_document_index(search_settings, None, db_session)
@@ -92,10 +94,11 @@ def stream_search_query(
             )
             if keyword_expansions:
                 logger.debug(
-                    f"Query expansion generated {len(keyword_expansions)} keyword queries"
+                    "Query expansion generated %s keyword queries",
+                    len(keyword_expansions),
                 )
         except Exception as e:
-            logger.warning(f"Query expansion failed: {e}; using original query only.")
+            logger.warning("Query expansion failed: %s; using original query only.", e)
             keyword_expansions = []
 
     # Build list of all executed queries for tracking
@@ -119,6 +122,7 @@ def stream_search_query(
             user=user,
             db_session=db_session,
             num_hits=request.num_hits,
+            hybrid_alpha=request.hybrid_alpha,
         )
     else:
         # Multiple queries - run in parallel and merge with RRF
@@ -133,6 +137,7 @@ def stream_search_query(
                     user,
                     db_session,
                     request.num_hits,
+                    request.hybrid_alpha,
                 ),
             )
             for query in all_executed_queries
@@ -214,12 +219,14 @@ def stream_search_query(
                 )
             )
             logger.debug(
-                f"LLM document selection evaluated {len(sections_to_evaluate)} sections, "
-                f"selected {len(selected_sections)} sections with doc IDs: {llm_selected_doc_ids}"
+                "LLM document selection evaluated %s sections, selected %s sections with doc IDs: %s",
+                len(sections_to_evaluate),
+                len(selected_sections),
+                llm_selected_doc_ids,
             )
         except Exception as e:
             # Allowing a blanket exception here as this step is not critical and the rest of the results are still valid
-            logger.warning(f"LLM document selection failed: {e}")
+            logger.warning("LLM document selection failed: %s", e)
             llm_selection_failed = True
     elif run_llm_selection and not sections:
         # LLM selection requested but no sections to evaluate

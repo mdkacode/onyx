@@ -1,8 +1,9 @@
+"use client";
+
 import "@opal/layouts/content/styles.css";
 import {
   ContentSm,
   type ContentSmOrientation,
-  type ContentSmProminence,
 } from "@opal/layouts/content/ContentSm";
 import {
   ContentXl,
@@ -16,8 +17,8 @@ import {
   ContentMd,
   type ContentMdProps,
 } from "@opal/layouts/content/ContentMd";
-import type { TagProps } from "@opal/components/tag/components";
-import type { IconFunctionComponent } from "@opal/types";
+import type { TagProps } from "@opal/components";
+import type { ColorTypes, IconFunctionComponent, RichStr } from "@opal/types";
 import { widthVariants } from "@opal/shared";
 import type { ExtremaSizeVariants } from "@opal/types";
 
@@ -39,10 +40,10 @@ interface ContentBaseProps {
   icon?: IconFunctionComponent;
 
   /** Main title text. */
-  title: string;
+  title: string | RichStr;
 
   /** Optional description below the title. */
-  description?: string;
+  description?: string | RichStr;
 
   /** Enable inline editing of the title. */
   editable?: boolean;
@@ -52,18 +53,27 @@ interface ContentBaseProps {
 
   /**
    * Width preset controlling the component's horizontal size.
-   * Uses the shared `WidthVariant` scale from `@opal/shared`.
    *
    * - `"auto"` — Shrink-wraps to content width
    * - `"fit"` — Shrink-wraps to content width
    * - `"full"` — Stretches to fill the parent's width
    *
-   * @default "fit"
+   * @default "full"
    */
-  widthVariant?: ExtremaSizeVariants;
+  width?: ExtremaSizeVariants;
 
-  /** When `true`, the title color hooks into `Interactive.Stateful`/`Interactive.Stateless`'s `--interactive-foreground` variable. */
-  withInteractive?: boolean;
+  /**
+   * Color mode for the icon + title pair.
+   *
+   * - `"default"` — `text-04` for both icon and title
+   * - `"muted"` — `text-03` for both
+   * - `"danger"` — `status-error-05` for both
+   * - `"interactive"` — inherits from the parent `.interactive` element's
+   *   `--interactive-foreground` / `--interactive-foreground-icon` variables
+   *
+   * @default "default"
+   */
+  color?: ColorTypes;
 
   /** Ref forwarded to the root `<div>` of the resolved layout. */
   ref?: React.Ref<HTMLDivElement>;
@@ -94,8 +104,8 @@ type LgContentProps = ContentBaseProps & {
 type MdContentProps = ContentBaseProps & {
   sizePreset: "main-content" | "main-ui" | "secondary";
   variant?: "section";
-  /** When `true`, renders "(Optional)" beside the title in the muted font variant. */
-  optional?: boolean;
+  /** Muted suffix rendered beside the title. Use `"optional"` for "(Optional)". */
+  suffix?: "optional" | (string & {});
   /** Auxiliary status icon rendered beside the title. */
   auxIcon?: "info-gray" | "info-blue" | "warning" | "error";
   /** Tag rendered beside the title. */
@@ -111,8 +121,6 @@ type SmContentProps = Omit<
   variant: "body";
   /** Layout orientation. Default: `"inline"`. */
   orientation?: ContentSmOrientation;
-  /** Title prominence. Default: `"default"`. */
-  prominence?: ContentSmProminence;
 };
 
 type ContentProps =
@@ -129,8 +137,8 @@ function Content(props: ContentProps) {
   const {
     sizePreset = "headline",
     variant = "heading",
-    widthVariant = "full",
-    withInteractive,
+    width = "full",
+    color = "default",
     ref,
     ...rest
   } = props;
@@ -143,7 +151,6 @@ function Content(props: ContentProps) {
       layout = (
         <ContentXl
           sizePreset={sizePreset}
-          withInteractive={withInteractive}
           ref={ref}
           {...(rest as Omit<ContentXlProps, "sizePreset">)}
         />
@@ -152,7 +159,6 @@ function Content(props: ContentProps) {
       layout = (
         <ContentLg
           sizePreset={sizePreset}
-          withInteractive={withInteractive}
           ref={ref}
           {...(rest as Omit<ContentLgProps, "sizePreset">)}
         />
@@ -166,7 +172,6 @@ function Content(props: ContentProps) {
     layout = (
       <ContentMd
         sizePreset={sizePreset}
-        withInteractive={withInteractive}
         ref={ref}
         {...(rest as Omit<ContentMdProps, "sizePreset">)}
       />
@@ -178,7 +183,6 @@ function Content(props: ContentProps) {
     layout = (
       <ContentSm
         sizePreset={sizePreset}
-        withInteractive={withInteractive}
         ref={ref}
         {...(rest as Omit<
           React.ComponentProps<typeof ContentSm>,
@@ -194,7 +198,11 @@ function Content(props: ContentProps) {
       `Content: no layout matched for sizePreset="${sizePreset}" variant="${variant}"`
     );
 
-  return <div className={widthVariants[widthVariant]}>{layout}</div>;
+  return (
+    <div className={widthVariants[width]} data-content-color={color}>
+      {layout}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------

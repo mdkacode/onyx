@@ -1,9 +1,11 @@
 "use client";
 
-import { Button } from "@opal/components/buttons/button/components";
+import { Button, Text } from "@opal/components";
+import type { TextFont } from "@opal/components";
 import type { ContainerSizeVariants } from "@opal/types";
 import SvgEdit from "@opal/icons/edit";
-import type { IconFunctionComponent } from "@opal/types";
+import type { IconFunctionComponent, RichStr } from "@opal/types";
+import { toPlainString } from "@opal/components/text/InlineMarkdown";
 import { cn } from "@opal/utils";
 import { useState } from "react";
 
@@ -14,17 +16,13 @@ import { useState } from "react";
 type ContentLgSizePreset = "headline" | "section";
 
 interface ContentLgPresetConfig {
-  /** Icon width/height (CSS value). */
-  iconSize: string;
-  /** Tailwind padding class for the icon container. */
-  iconContainerPadding: string;
-  /** Gap between icon container and content (CSS value). */
-  gap: string;
-  /** Tailwind font class for the title. */
-  titleFont: string;
-  /** Title line-height — also used as icon container min-height (CSS value). */
+  /** Opal font name for the title. */
+  titleFont: TextFont;
+  /** Title line-height — also sets icon container height (CSS value). */
   lineHeight: string;
-  /** Button `size` prop for the edit button. Uses the shared `SizeVariant` scale. */
+  /** Icon width/height = lineHeight - 4px (CSS value). */
+  iconSize: string;
+  /** Button `size` prop for the edit button. */
   editButtonSize: ContainerSizeVariants;
   /** Tailwind padding class for the edit button container. */
   editButtonPadding: string;
@@ -35,10 +33,10 @@ interface ContentLgProps {
   icon?: IconFunctionComponent;
 
   /** Main title text. */
-  title: string;
+  title: string | RichStr;
 
   /** Optional description below the title. */
-  description?: string;
+  description?: string | RichStr;
 
   /** Enable inline editing of the title. */
   editable?: boolean;
@@ -48,9 +46,6 @@ interface ContentLgProps {
 
   /** Size preset. Default: `"headline"`. */
   sizePreset?: ContentLgSizePreset;
-
-  /** When `true`, the title color hooks into `Interactive`'s `--interactive-foreground` variable. */
-  withInteractive?: boolean;
 
   /** Ref forwarded to the root `<div>`. */
   ref?: React.Ref<HTMLDivElement>;
@@ -62,20 +57,16 @@ interface ContentLgProps {
 
 const CONTENT_LG_PRESETS: Record<ContentLgSizePreset, ContentLgPresetConfig> = {
   headline: {
-    iconSize: "2rem",
-    iconContainerPadding: "p-0.5",
-    gap: "0.25rem",
-    titleFont: "font-heading-h2",
+    titleFont: "heading-h2",
     lineHeight: "2.25rem",
+    iconSize: "2rem",
     editButtonSize: "md",
     editButtonPadding: "p-1",
   },
   section: {
-    iconSize: "1.25rem",
-    iconContainerPadding: "p-1",
-    gap: "0rem",
-    titleFont: "font-heading-h3-muted",
+    titleFont: "heading-h3-muted",
     lineHeight: "1.75rem",
+    iconSize: "1.5rem",
     editButtonSize: "sm",
     editButtonPadding: "p-0.5",
   },
@@ -92,60 +83,54 @@ function ContentLg({
   description,
   editable,
   onTitleChange,
-  withInteractive,
   ref,
 }: ContentLgProps) {
   const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(title);
+  const [editValue, setEditValue] = useState(toPlainString(title));
 
   const config = CONTENT_LG_PRESETS[sizePreset];
 
   function startEditing() {
-    setEditValue(title);
+    setEditValue(toPlainString(title));
     setEditing(true);
   }
 
   function commit() {
     const value = editValue.trim();
-    if (value && value !== title) onTitleChange?.(value);
+    if (value && value !== toPlainString(title)) onTitleChange?.(value);
     setEditing(false);
   }
 
   return (
-    <div
-      ref={ref}
-      className="opal-content-lg"
-      data-interactive={withInteractive || undefined}
-      style={{ gap: config.gap }}
-    >
-      {Icon && (
-        <div
-          className={cn(
-            "opal-content-lg-icon-container shrink-0",
-            config.iconContainerPadding
-          )}
-          style={{ minHeight: config.lineHeight }}
-        >
-          <Icon
-            className="opal-content-lg-icon"
-            style={{ width: config.iconSize, height: config.iconSize }}
-          />
-        </div>
-      )}
+    <div ref={ref} className="opal-content-lg" data-opal-content>
+      <div className="opal-content-lg-header">
+        {Icon && (
+          <div
+            className="opal-content-lg-icon-container shrink-0"
+            style={{ minHeight: config.lineHeight }}
+          >
+            <Icon
+              className="opal-content-lg-icon"
+              style={{ width: config.iconSize, height: config.iconSize }}
+            />
+          </div>
+        )}
 
-      <div className="opal-content-lg-body">
         <div className="opal-content-lg-title-row">
           {editing ? (
             <div className="opal-content-lg-input-sizer">
               <span
-                className={cn("opal-content-lg-input-mirror", config.titleFont)}
+                className={cn(
+                  "opal-content-lg-input-mirror",
+                  `font-${config.titleFont}`
+                )}
               >
                 {editValue || "\u00A0"}
               </span>
               <input
                 className={cn(
                   "opal-content-lg-input",
-                  config.titleFont,
+                  `font-${config.titleFont}`,
                   "text-text-04"
                 )}
                 value={editValue}
@@ -157,7 +142,7 @@ function ContentLg({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commit();
                   if (e.key === "Escape") {
-                    setEditValue(title);
+                    setEditValue(toPlainString(title));
                     setEditing(false);
                   }
                 }}
@@ -165,19 +150,15 @@ function ContentLg({
               />
             </div>
           ) : (
-            <span
-              className={cn(
-                "opal-content-lg-title",
-                config.titleFont,
-                "text-text-04",
-                editable && "cursor-pointer"
-              )}
+            <Text
+              font={config.titleFont}
+              color="inherit"
+              maxLines={1}
+              title={toPlainString(title)}
               onClick={editable ? startEditing : undefined}
-              style={{ height: config.lineHeight }}
-              title={title}
             >
               {title}
-            </span>
+            </Text>
           )}
 
           {editable && !editing && (
@@ -198,13 +179,22 @@ function ContentLg({
             </div>
           )}
         </div>
-
-        {description && (
-          <div className="opal-content-lg-description font-secondary-body text-text-03">
-            {description}
-          </div>
-        )}
       </div>
+
+      {description && toPlainString(description) && (
+        <div
+          className="opal-content-lg-description"
+          style={
+            Icon
+              ? { paddingLeft: `calc(${config.lineHeight} + 0.125rem)` }
+              : undefined
+          }
+        >
+          <Text font="secondary-body" color="text-03" as="p">
+            {description}
+          </Text>
+        </div>
+      )}
     </div>
   );
 }

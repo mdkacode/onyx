@@ -44,6 +44,7 @@ class OnyxErrorCode(Enum):
     VALIDATION_ERROR = ("VALIDATION_ERROR", 400)
     INVALID_INPUT = ("INVALID_INPUT", 400)
     MISSING_REQUIRED_FIELD = ("MISSING_REQUIRED_FIELD", 400)
+    QUERY_REJECTED = ("QUERY_REJECTED", 400)
 
     # ------------------------------------------------------------------
     # Not Found (404)
@@ -67,6 +68,9 @@ class OnyxErrorCode(Enum):
     # ------------------------------------------------------------------
     RATE_LIMITED = ("RATE_LIMITED", 429)
     SEAT_LIMIT_EXCEEDED = ("SEAT_LIMIT_EXCEEDED", 402)
+    TRIAL_INVITE_LIMIT_EXCEEDED = ("TRIAL_INVITE_LIMIT_EXCEEDED", 403)
+    FEATURE_NOT_AVAILABLE = ("FEATURE_NOT_AVAILABLE", 402)
+    SUBSCRIPTION_INACTIVE = ("SUBSCRIPTION_INACTIVE", 402)
 
     # ------------------------------------------------------------------
     # Payload (413)

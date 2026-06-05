@@ -18,7 +18,7 @@ from shared_configs.model_server_models import Embedding
 
 if TYPE_CHECKING:
     from onyx.indexing.indexing_pipeline import DocumentBatchPrepareContext
-from sqlalchemy.engine.util import TransactionalContext
+from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
     from onyx.db.models import SearchSettings
@@ -151,8 +151,8 @@ class EmbeddingModelDetail(BaseModel):
     id: int | None = None
     model_name: str
     normalize: bool
-    query_prefix: str | None
-    passage_prefix: str | None
+    query_prefix: str | None = ""
+    passage_prefix: str | None = ""
     api_url: str | None = None
     provider_type: EmbeddingProvider | None = None
     api_key: str | None = None
@@ -189,11 +189,19 @@ class IndexingSetting(EmbeddingModelDetail):
     model_dim: int
     index_name: str | None
     multipass_indexing: bool
-    embedding_precision: EmbeddingPrecision
+    # Defaults to FLOAT (float32). OpenSearch ignores embedding_precision and
+    # stores vectors as float32 regardless — see
+    # onyx/document_index/opensearch/opensearch_document_index.py. BFLOAT16
+    # still works for existing Vespa deployments.
+    embedding_precision: EmbeddingPrecision = EmbeddingPrecision.FLOAT
     reduced_dimension: int | None = None
 
     switchover_type: SwitchoverType = SwitchoverType.REINDEX
     enable_contextual_rag: bool
+    contextual_rag_model_configuration_id: int | None = None
+    # Deprecated: accepted for backward compat but silently ignored on write.
+    # Callers must send contextual_rag_model_configuration_id instead;
+    # these fields are no longer resolved or persisted.
     contextual_rag_llm_name: str | None = None
     contextual_rag_llm_provider: str | None = None
 
@@ -221,6 +229,7 @@ class IndexingSetting(EmbeddingModelDetail):
             reduced_dimension=search_settings.reduced_dimension,
             switchover_type=search_settings.switchover_type,
             enable_contextual_rag=search_settings.enable_contextual_rag,
+            contextual_rag_model_configuration_id=search_settings.contextual_rag_model_configuration_id,
         )
 
 
@@ -235,37 +244,50 @@ class UpdatableChunkData(BaseModel):
     boost_score: float
 
 
-class BuildMetadataAwareChunksResult(BaseModel):
-    chunks: list[DocMetadataAwareIndexChunk]
+class ChunkEnrichmentContext(Protocol):
+    """Returned by prepare_enrichment. Holds pre-computed metadata lookups
+    and provides per-chunk enrichment."""
+
     doc_id_to_previous_chunk_cnt: dict[str, int]
     doc_id_to_new_chunk_cnt: dict[str, int]
-    user_file_id_to_raw_text: dict[str, str]
-    user_file_id_to_token_count: dict[str, int | None]
+
+    def enrich_chunk(
+        self, chunk: IndexChunk, score: float
+    ) -> DocMetadataAwareIndexChunk: ...
 
 
 class IndexingBatchAdapter(Protocol):
+    connector_id: int | None
+    credential_id: int | None
+
     def prepare(
         self, documents: list[Document], ignore_time_skip: bool
     ) -> Optional["DocumentBatchPrepareContext"]: ...
 
     @contextlib.contextmanager
-    def lock_context(
-        self, documents: list[Document]
-    ) -> Generator[TransactionalContext, None, None]:
-        """Provide a transaction/row-lock context for critical updates."""
+    def lock_context(self, documents: list[Document]) -> Generator[Session, None, None]:
+        """Acquire row locks and yield the session for the critical section."""
 
-    def build_metadata_aware_chunks(
+    def prepare_enrichment(
         self,
-        chunks_with_embeddings: list[IndexChunk],
-        chunk_content_scores: list[float],
-        tenant_id: str,
         context: "DocumentBatchPrepareContext",
-    ) -> BuildMetadataAwareChunksResult: ...
+        tenant_id: str,
+        chunks: list[DocAwareChunk],
+        db_session: Session,
+    ) -> ChunkEnrichmentContext:
+        """Prepare per-chunk enrichment data (access, document sets, boost, etc.).
+
+        Precondition: ``chunks`` have already been through the embedding step
+        (i.e. they are ``IndexChunk`` instances with populated embeddings,
+        passed here as the base ``DocAwareChunk`` type).
+        """
+        ...
 
     def post_index(
         self,
         context: "DocumentBatchPrepareContext",
         updatable_chunk_data: list[UpdatableChunkData],
         filtered_documents: list[Document],
-        result: BuildMetadataAwareChunksResult,
+        enrichment: ChunkEnrichmentContext,
+        db_session: Session,
     ) -> None: ...

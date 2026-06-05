@@ -1,3 +1,4 @@
+import copy
 import os
 import threading
 from collections.abc import Iterator
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from onyx.configs.app_configs import MOCK_LLM_RESPONSE
+from onyx.configs.app_configs import SEND_USER_METADATA_TO_LLM_PROVIDER
 from onyx.configs.chat_configs import LLM_SOCKET_READ_TIMEOUT
 from onyx.configs.model_configs import GEN_AI_TEMPERATURE
 from onyx.configs.model_configs import LITELLM_EXTRA_BODY
@@ -23,6 +25,7 @@ from onyx.llm.interfaces import ToolChoiceOptions
 from onyx.llm.model_response import ModelResponse
 from onyx.llm.model_response import ModelResponseStream
 from onyx.llm.model_response import Usage
+from onyx.llm.models import ANTHROPIC_ADAPTIVE_REASONING_EFFORT
 from onyx.llm.models import ANTHROPIC_REASONING_EFFORT_BUDGET
 from onyx.llm.models import OPENAI_REASONING_EFFORT
 from onyx.llm.request_context import get_llm_mock_response
@@ -44,11 +47,14 @@ from onyx.llm.well_known_providers.constants import (
 )
 from onyx.llm.well_known_providers.constants import LM_STUDIO_API_KEY_CONFIG_KEY
 from onyx.llm.well_known_providers.constants import OLLAMA_API_KEY_CONFIG_KEY
+from onyx.llm.well_known_providers.constants import VERTEX_AUTH_METHOD_KWARG
+from onyx.llm.well_known_providers.constants import VERTEX_AUTH_METHOD_WORKLOAD_IDENTITY
 from onyx.llm.well_known_providers.constants import VERTEX_CREDENTIALS_FILE_KWARG
 from onyx.llm.well_known_providers.constants import (
     VERTEX_CREDENTIALS_FILE_KWARG_ENV_VAR_FORMAT,
 )
 from onyx.llm.well_known_providers.constants import VERTEX_LOCATION_KWARG
+from onyx.llm.well_known_providers.constants import VERTEX_PROJECT_KWARG
 from onyx.utils.encryption import mask_string
 from onyx.utils.logger import setup_logger
 
@@ -67,6 +73,32 @@ STANDARD_MAX_TOKENS_KWARG = "max_completion_tokens"
 _VERTEX_ANTHROPIC_MODELS_REJECTING_OUTPUT_CONFIG = (
     "claude-opus-4-5",
     "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+# Anthropic models that require the adaptive thinking API (thinking.type.adaptive
+# + output_config.effort) instead of the legacy thinking.type.enabled + budget_tokens.
+_ANTHROPIC_ADAPTIVE_THINKING_MODELS = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+# Anthropic models that reject any non-default sampling parameter (temperature,
+# top_p, top_k). For these models we must omit these params entirely from the
+# request payload — passing them returns a 400 invalid_request_error. LiteLLM's
+# drop_params is unreliable here because AnthropicConfig still lists temperature
+# as supported. Match on substring to cover proxy/Vertex naming variants (e.g.
+# "claude-4.7-opus" via litellm_proxy).
+_ANTHROPIC_NO_SAMPLING_PARAMS_MODELS = (
+    "claude-opus-4-7",
+    "claude-opus-4.7",
+    "claude-4-7-opus",
+    "claude-4.7-opus",
+    "claude-opus-4-8",
+    "claude-opus-4.8",
+    "claude-4-8-opus",
+    "claude-4.8-opus",
 )
 
 
@@ -175,6 +207,28 @@ def _strip_tool_content_from_messages(
     return result
 
 
+def _fix_tool_user_message_ordering(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Insert a synthetic assistant message between tool and user messages.
+
+    Some models (e.g. Mistral on Azure) require strict message ordering where
+    a user message cannot immediately follow a tool message. This function
+    inserts a minimal assistant message to bridge the gap.
+    """
+    if len(messages) < 2:
+        return messages
+
+    result: list[dict[str, Any]] = [messages[0]]
+    for msg in messages[1:]:
+        prev_role = result[-1].get("role")
+        curr_role = msg.get("role")
+        if prev_role == "tool" and curr_role == "user":
+            result.append({"role": "assistant", "content": "Noted. Continuing."})
+        result.append(msg)
+    return result
+
+
 def _messages_contain_tool_content(messages: list[dict[str, Any]]) -> bool:
     """Check if any messages contain tool-related content blocks."""
     for msg in messages:
@@ -185,11 +239,42 @@ def _messages_contain_tool_content(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _prompt_contains_tool_call_history(prompt: LanguageModelInput) -> bool:
+    """Check if the prompt contains any assistant messages with tool_calls.
+
+    When Anthropic's extended thinking is enabled, the API requires every
+    assistant message to start with a thinking block before any tool_use
+    blocks.  Since we don't preserve thinking_blocks (they carry
+    cryptographic signatures that can't be reconstructed), we must skip
+    the thinking param whenever history contains prior tool-calling turns.
+    """
+    from onyx.llm.models import AssistantMessage
+
+    msgs = prompt if isinstance(prompt, list) else [prompt]
+    return any(isinstance(msg, AssistantMessage) and msg.tool_calls for msg in msgs)
+
+
 def _is_vertex_model_rejecting_output_config(model_name: str) -> bool:
     normalized_model_name = model_name.lower()
     return any(
         blocked_model in normalized_model_name
         for blocked_model in _VERTEX_ANTHROPIC_MODELS_REJECTING_OUTPUT_CONFIG
+    )
+
+
+def _anthropic_uses_adaptive_thinking(model_name: str) -> bool:
+    normalized_model_name = model_name.lower()
+    return any(
+        adaptive_model in normalized_model_name
+        for adaptive_model in _ANTHROPIC_ADAPTIVE_THINKING_MODELS
+    )
+
+
+def _anthropic_omits_sampling_params(model_name: str) -> bool:
+    normalized_model_name = model_name.lower()
+    return any(
+        no_sampling_model in normalized_model_name
+        for no_sampling_model in _ANTHROPIC_NO_SAMPLING_PARAMS_MODELS
     )
 
 
@@ -238,14 +323,29 @@ class LitellmLLM(LLM):
         # Create a dictionary for model-specific arguments if it's None
         model_kwargs = model_kwargs or {}
 
+        vertex_auth_method = (
+            (custom_config or {}).get(VERTEX_AUTH_METHOD_KWARG)
+            if model_provider == LlmProviderNames.VERTEX_AI
+            else None
+        )
+        vertex_is_workload_identity = (
+            vertex_auth_method == VERTEX_AUTH_METHOD_WORKLOAD_IDENTITY
+        )
+
         if custom_config:
             for k, v in custom_config.items():
                 if model_provider == LlmProviderNames.VERTEX_AI:
+                    # In Workload Identity mode, omit vertex_credentials so LiteLLM
+                    # falls back to google.auth.default() (the GKE metadata server).
                     if k == VERTEX_CREDENTIALS_FILE_KWARG:
-                        model_kwargs[k] = v
+                        if not vertex_is_workload_identity:
+                            model_kwargs[k] = v
                     elif k == VERTEX_CREDENTIALS_FILE_KWARG_ENV_VAR_FORMAT:
-                        model_kwargs[VERTEX_CREDENTIALS_FILE_KWARG] = v
+                        if not vertex_is_workload_identity:
+                            model_kwargs[VERTEX_CREDENTIALS_FILE_KWARG] = v
                     elif k == VERTEX_LOCATION_KWARG:
+                        model_kwargs[k] = v
+                    elif k == VERTEX_PROJECT_KWARG:
                         model_kwargs[k] = v
                 elif model_provider == LlmProviderNames.OLLAMA_CHAT:
                     if k == OLLAMA_API_KEY_CONFIG_KEY:
@@ -289,6 +389,24 @@ class LitellmLLM(LLM):
             and VERTEX_LOCATION_KWARG not in model_kwargs
         ):
             model_kwargs[VERTEX_LOCATION_KWARG] = "global"
+
+        # Bifrost and OpenAI-compatible: OpenAI-compatible proxies that send
+        # model names directly to the endpoint. We route through LiteLLM's
+        # openai provider with the server's base URL, and ensure /v1 is appended.
+        if model_provider in (
+            LlmProviderNames.BIFROST,
+            LlmProviderNames.OPENAI_COMPATIBLE,
+        ):
+            self._custom_llm_provider = "openai"
+            # LiteLLM's OpenAI client requires an api_key to be set.
+            # Many OpenAI-compatible servers don't need auth, so supply a
+            # placeholder to prevent LiteLLM from raising AuthenticationError.
+            if not self._api_key:
+                model_kwargs.setdefault("api_key", "not-needed")
+            if self._api_base is not None:
+                base = self._api_base.rstrip("/")
+                self._api_base = base if base.endswith("/v1") else f"{base}/v1"
+                model_kwargs["api_base"] = self._api_base
 
         # This is needed for Ollama to do proper function calling
         if model_provider == LlmProviderNames.OLLAMA_CHAT and api_base is not None:
@@ -352,7 +470,7 @@ class LitellmLLM(LLM):
                 db_session.commit()
         except Exception as e:
             # Log but don't fail the LLM call if tracking fails
-            logger.warning(f"Failed to track LLM cost: {e}")
+            logger.warning("Failed to track LLM cost: %s", e)
 
     def _completion(
         self,
@@ -369,8 +487,10 @@ class LitellmLLM(LLM):
         client: "HTTPHandler | None" = None,
     ) -> Union["ModelResponse", "CustomStreamWrapper"]:
         # Lazy loading to avoid memory bloat for non-inference flows
+        from litellm.exceptions import RateLimitError
+        from litellm.exceptions import Timeout
+
         from onyx.llm.litellm_singleton import litellm
-        from litellm.exceptions import Timeout, RateLimitError
 
         #########################
         # Flags that modify the final arguments
@@ -401,14 +521,23 @@ class LitellmLLM(LLM):
         optional_kwargs: dict[str, Any] = {}
 
         # Model name
+        is_openai_compatible_proxy = self._model_provider in (
+            LlmProviderNames.BIFROST,
+            LlmProviderNames.OPENAI_COMPATIBLE,
+        )
         model_provider = (
             f"{self.config.model_provider}/responses"
             if is_openai_model  # Uses litellm's completions -> responses bridge
             else self.config.model_provider
         )
-        model = (
-            f"{model_provider}/{self.config.deployment_name or self.config.model_name}"
-        )
+        if is_openai_compatible_proxy:
+            # OpenAI-compatible proxies (Bifrost, generic OpenAI-compatible
+            # servers) expect model names sent directly to their endpoint.
+            # We use custom_llm_provider="openai" so LiteLLM doesn't try
+            # to route based on the provider prefix.
+            model = self.config.deployment_name or self.config.model_name
+        else:
+            model = f"{model_provider}/{self.config.deployment_name or self.config.model_name}"
 
         # Tool choice
         if is_claude_model and tool_choice == ToolChoiceOptions.REQUIRED:
@@ -421,7 +550,17 @@ class LitellmLLM(LLM):
             tool_choice = None
 
         # Temperature
-        temperature = 1 if is_reasoning else self._temperature
+        # Some models reject any non-default sampling parameter (e.g. Claude
+        # Opus 4.7/4.8 return a 400 invalid_request_error if temperature is set
+        # to anything). For those models we must omit the param entirely —
+        # LiteLLM's drop_params is not reliable here because the upstream
+        # provider config can still claim the param is supported.
+        # https://github.com/BerriAI/litellm/issues/26444
+        # TODO(litellm): Consider removing this once the above is resolved,
+        # although this assumes users have upgraded their litellm if relevant.
+        omits_sampling_params = _anthropic_omits_sampling_params(self.config.model_name)
+        if not omits_sampling_params:
+            optional_kwargs["temperature"] = 1 if is_reasoning else self._temperature
 
         if stream and not is_vertex_model_rejecting_output_config:
             optional_kwargs["stream_options"] = {"include_usage": True}
@@ -445,22 +584,42 @@ class LitellmLLM(LLM):
                     }
 
             elif is_claude_model:
-                budget_tokens: int | None = ANTHROPIC_REASONING_EFFORT_BUDGET.get(
-                    reasoning_effort
-                )
+                # Anthropic requires every assistant message with tool_use
+                # blocks to start with a thinking block that carries a
+                # cryptographic signature.  We don't preserve those blocks
+                # across turns, so skip thinking when the history already
+                # contains tool-calling assistant messages.  LiteLLM's
+                # modify_params workaround doesn't cover all providers
+                # (notably Bedrock).
+                has_tool_call_history = _prompt_contains_tool_call_history(prompt)
 
-                if budget_tokens is not None:
-                    if max_tokens is not None:
-                        # Anthropic has a weird rule where max token has to be at least as much as budget tokens if set
-                        # and the minimum budget tokens is 1024
-                        # Will note that overwriting a developer set max tokens is not ideal but is the best we can do for now
-                        # It is better to allow the LLM to output more reasoning tokens even if it results in a fairly small tool
-                        # call as compared to reducing the budget for reasoning.
-                        max_tokens = max(budget_tokens + 1, max_tokens)
-                    optional_kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": budget_tokens,
-                    }
+                if _anthropic_uses_adaptive_thinking(self.config.model_name):
+                    # Newer Anthropic models (Claude Opus 4.7+) reject
+                    # thinking.type.enabled — they require the adaptive
+                    # thinking config with output_config.effort.
+                    if not has_tool_call_history:
+                        optional_kwargs["thinking"] = {"type": "adaptive"}
+                        optional_kwargs["output_config"] = {
+                            "effort": ANTHROPIC_ADAPTIVE_REASONING_EFFORT[
+                                reasoning_effort
+                            ],
+                        }
+                else:
+                    budget_tokens: int | None = ANTHROPIC_REASONING_EFFORT_BUDGET.get(
+                        reasoning_effort
+                    )
+                    if budget_tokens is not None and not has_tool_call_history:
+                        if max_tokens is not None:
+                            # Anthropic has a weird rule where max token has to be at least as much as budget tokens if set
+                            # and the minimum budget tokens is 1024
+                            # Will note that overwriting a developer set max tokens is not ideal but is the best we can do for now
+                            # It is better to allow the LLM to output more reasoning tokens even if it results in a fairly small tool
+                            # call as compared to reducing the budget for reasoning.
+                            max_tokens = max(budget_tokens + 1, max_tokens)
+                        optional_kwargs["thinking"] = {
+                            "type": "enabled",
+                            "budget_tokens": budget_tokens,
+                        }
 
                 # LiteLLM just does some mapping like this anyway but is incomplete for Anthropic
                 optional_kwargs.pop("reasoning_effort", None)
@@ -483,10 +642,14 @@ class LitellmLLM(LLM):
         if structured_response_format:
             optional_kwargs["response_format"] = structured_response_format
 
-        if not (is_claude_model or is_ollama or is_mistral):
+        if (
+            not (is_claude_model or is_ollama or is_mistral)
+            or is_openai_compatible_proxy
+        ):
             # Litellm bug: tool_choice is dropped silently if not specified here for OpenAI
             # However, this param breaks Anthropic and Mistral models,
-            # so it must be conditionally included.
+            # so it must be conditionally included unless the request is
+            # routed through Bifrost's OpenAI-compatible endpoint.
             # Additionally, tool_choice is not supported by Ollama and causes warnings if included.
             # See also, https://github.com/ollama/ollama/issues/11171
             optional_kwargs["allowed_openai_params"] = ["tool_choice"]
@@ -496,6 +659,38 @@ class LitellmLLM(LLM):
             model_kwargs=self._model_kwargs,
             user_identity=user_identity,
         )
+
+        # OpenRouter sticky routing: inject session_id into extra_body so that
+        # OpenRouter pins all turns of a conversation to the same upstream provider,
+        # enabling prompt cache hits across turns.
+        # Without this, OpenRouter may alternate between e.g. Anthropic and Google
+        # for the same model, causing cache misses on every other turn.
+        # See: https://openrouter.ai/docs/features/provider-routing#session-id
+        #
+        # Gated on SEND_USER_METADATA_TO_LLM_PROVIDER for consistency with the
+        # user/session metadata handled in build_litellm_passthrough_kwargs: an
+        # operator who opted out of sending session identifiers to providers
+        # should not have the session_id forwarded to OpenRouter either.
+        if (
+            SEND_USER_METADATA_TO_LLM_PROVIDER
+            and self._model_provider == LlmProviderNames.OPENROUTER
+            and user_identity is not None
+            and user_identity.session_id
+        ):
+            if passthrough_kwargs is self._model_kwargs:
+                passthrough_kwargs = copy.deepcopy(self._model_kwargs)
+            existing_extra_body = passthrough_kwargs.get("extra_body") or {}
+            if isinstance(existing_extra_body, dict):
+                passthrough_kwargs["extra_body"] = {
+                    **existing_extra_body,
+                    "session_id": user_identity.session_id,
+                }
+            else:
+                logger.warning(
+                    "OpenRouter sticky routing: extra_body is not a dict (%s), "
+                    "skipping session_id injection",
+                    type(existing_extra_body).__name__,
+                )
 
         try:
             # NOTE: must pass in None instead of empty strings otherwise litellm
@@ -530,6 +725,18 @@ class LitellmLLM(LLM):
                 ):
                     messages = _strip_tool_content_from_messages(messages)
 
+                # Some models (e.g. Mistral) reject a user message
+                # immediately after a tool message. Insert a synthetic
+                # assistant bridge message to satisfy the ordering
+                # constraint. Check both the provider and the deployment/
+                # model name to catch Mistral hosted on Azure.
+                model_or_deployment = (
+                    self._deployment_name or self._model_version or ""
+                ).lower()
+                is_mistral_model = is_mistral or "mistral" in model_or_deployment
+                if is_mistral_model:
+                    messages = _fix_tool_user_message_ordering(messages)
+
                 # Only pass tool_choice when tools are present — some providers (e.g. Fireworks)
                 # reject requests where tool_choice is explicitly null.
                 if tools and tool_choice is not None:
@@ -544,7 +751,6 @@ class LitellmLLM(LLM):
                     messages=messages,
                     tools=tools,
                     stream=stream,
-                    temperature=temperature,
                     timeout=timeout_override or self._timeout,
                     max_tokens=max_tokens,
                     client=client,
@@ -636,8 +842,8 @@ class LitellmLLM(LLM):
             # only held during connection setup (not the full inference).
             # The chunks are then collected outside the lock and reassembled
             # into a single ModelResponse via stream_chunk_builder.
-            from litellm import stream_chunk_builder
             from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
+            from litellm import stream_chunk_builder
 
             stream_response = cast(
                 LiteLLMCustomStreamWrapper,

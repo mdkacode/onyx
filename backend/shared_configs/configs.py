@@ -20,7 +20,7 @@ if DISABLE_MODEL_SERVER:
     INDEXING_MODEL_SERVER_HOST = "disabled"
 else:
     MODEL_SERVER_HOST = os.environ.get("MODEL_SERVER_HOST") or "localhost"
-    MODEL_SERVER_ALLOWED_HOST = os.environ.get("MODEL_SERVER_HOST") or "0.0.0.0"
+    MODEL_SERVER_ALLOWED_HOST = os.environ.get("MODEL_SERVER_HOST") or "0.0.0.0"  # noqa: S104 — model server allowed-host default; intentional for containerized deployment
     INDEXING_MODEL_SERVER_HOST = (
         os.environ.get("INDEXING_MODEL_SERVER_HOST") or MODEL_SERVER_HOST
     )
@@ -75,6 +75,13 @@ DEV_LOGGING_ENABLED = os.environ.get("DEV_LOGGING_ENABLED", "").lower() == "true
 # notset, debug, info, notice, warning, error, or critical
 LOG_LEVEL = os.environ.get("LOG_LEVEL") or "info"
 
+# Log output format: "plain" (human-readable text, default) or "json" (structured
+# single-line JSON, suitable for container log aggregators). When "json", context
+# such as tenant/request/task ids are emitted as discrete fields rather than being
+# prefixed into the message string.
+LOG_FORMAT = (os.environ.get("LOG_FORMAT") or "plain").lower()
+JSON_LOGGING = LOG_FORMAT == "json"
+
 # Timeout for API-based embedding models
 # NOTE: does not apply for Google VertexAI, since the python client doesn't
 # allow us to specify a custom timeout
@@ -98,6 +105,14 @@ STRICT_CHUNK_TOKEN_LIMIT = (
 
 # Set up Sentry integration (for error logging)
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
+
+# Celery task spans dominate ingestion volume (~94%), so default celery
+# tracing to 0. Web/API traces stay at a small non-zero rate so http.server
+# traces remain available. Both are env-tunable without a code change.
+SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.01"))
+SENTRY_CELERY_TRACES_SAMPLE_RATE = float(
+    os.environ.get("SENTRY_CELERY_TRACES_SAMPLE_RATE", "0.0")
+)
 
 
 # Fields which should only be set on new search setting
@@ -161,8 +176,9 @@ DEFAULT_REDIS_PREFIX = os.environ.get("DEFAULT_REDIS_PREFIX") or "default"
 
 
 async def async_return_default_schema(
-    *args: Any, **kwargs: Any  # noqa: ARG001
-) -> str:  # noqa: ARG001
+    *args: Any,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ARG001
+) -> str:
     return POSTGRES_DEFAULT_SCHEMA
 
 
@@ -188,25 +204,6 @@ IGNORED_SYNCING_TENANT_LIST = (
         if tenant.strip()
     ]
     if IGNORED_SYNCING_TENANT_IDS
-    else None
-)
-
-# Global flag to skip userfile threshold for all users/tenants
-SKIP_USERFILE_THRESHOLD = (
-    os.environ.get("SKIP_USERFILE_THRESHOLD", "").lower() == "true"
-)
-
-# Comma-separated list of specific tenant IDs to skip threshold (multi-tenant only)
-SKIP_USERFILE_THRESHOLD_TENANT_IDS = os.environ.get(
-    "SKIP_USERFILE_THRESHOLD_TENANT_IDS"
-)
-SKIP_USERFILE_THRESHOLD_TENANT_LIST = (
-    [
-        tenant.strip()
-        for tenant in SKIP_USERFILE_THRESHOLD_TENANT_IDS.split(",")
-        if tenant.strip()
-    ]
-    if SKIP_USERFILE_THRESHOLD_TENANT_IDS
     else None
 )
 

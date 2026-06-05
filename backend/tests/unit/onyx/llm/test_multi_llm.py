@@ -11,6 +11,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import Delta
 from litellm.types.utils import Function as LiteLLMFunction
 
+import onyx.llm.models
 from onyx.configs.app_configs import MOCK_LLM_RESPONSE
 from onyx.llm.constants import LlmProviderNames
 from onyx.llm.interfaces import LLMUserIdentity
@@ -28,6 +29,8 @@ from onyx.llm.utils import get_max_input_tokens
 VERTEX_OPUS_MODELS_REJECTING_OUTPUT_CONFIG = [
     "claude-opus-4-5@20251101",
     "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
 ]
 
 
@@ -98,9 +101,9 @@ def _accumulate_stream_to_assistant_message(
                     if tool_call_delta.function.name:
                         tool_calls_map[index]["name"] = tool_call_delta.function.name
                     if tool_call_delta.function.arguments:
-                        tool_calls_map[index][
-                            "arguments"
-                        ] += tool_call_delta.function.arguments
+                        tool_calls_map[index]["arguments"] += (
+                            tool_call_delta.function.arguments
+                        )
 
     # Convert accumulated tool calls to ToolCall list, sorted by index
     tool_calls = None
@@ -421,6 +424,85 @@ def test_multiple_tool_calls_streaming(default_multi_llm: LitellmLLM) -> None:
             mock_response=MOCK_LLM_RESPONSE,
             allowed_openai_params=["tool_choice"],
         )
+
+
+ANTHROPIC_MODELS_OMITTING_SAMPLING_PARAMS = [
+    "claude-opus-4-7",
+    "claude-opus-4-7@20260101",
+    "claude-opus-4.7",
+    "claude-4-7-opus",
+    "claude-4.7-opus",
+    "claude-opus-4-8",
+    "claude-opus-4-8@20260101",
+    "claude-opus-4.8",
+    "claude-4-8-opus",
+    "claude-4.8-opus",
+]
+
+
+@pytest.mark.parametrize("model_name", ANTHROPIC_MODELS_OMITTING_SAMPLING_PARAMS)
+def test_omits_temperature_for_no_sampling_params_models(model_name: str) -> None:
+    llm = LitellmLLM(
+        api_key="test_key",
+        timeout=30,
+        model_provider=LlmProviderNames.LITELLM_PROXY,
+        model_name=model_name,
+        max_input_tokens=get_max_input_tokens(
+            model_provider=LlmProviderNames.LITELLM_PROXY,
+            model_name=model_name,
+        ),
+    )
+
+    with patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = []
+
+        messages: LanguageModelInput = [UserMessage(content="Hi")]
+        list(llm.stream(messages))
+
+        kwargs = mock_completion.call_args.kwargs
+        assert "temperature" not in kwargs
+
+
+@pytest.mark.parametrize("model_name", ["claude-opus-4-7", "claude-opus-4-8"])
+def test_claude_adaptive_thinking_uses_output_config(model_name: str) -> None:
+    # Non-Vertex providers must use the adaptive thinking API for these models
+    # (thinking.type=adaptive + output_config.effort) rather than the legacy
+    # thinking.type.enabled + budget_tokens path, which they reject with a 400.
+    llm = LitellmLLM(
+        api_key="test_key",
+        timeout=30,
+        model_provider=LlmProviderNames.LITELLM_PROXY,
+        model_name=model_name,
+        max_input_tokens=get_max_input_tokens(
+            model_provider=LlmProviderNames.LITELLM_PROXY,
+            model_name=model_name,
+        ),
+    )
+
+    with (
+        patch("litellm.completion") as mock_completion,
+        patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True),
+    ):
+        mock_completion.return_value = []
+
+        messages: LanguageModelInput = [UserMessage(content="Hi")]
+        list(llm.stream(messages, reasoning_effort=ReasoningEffort.HIGH))
+
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "output_config" in kwargs
+        assert "budget_tokens" not in kwargs["thinking"]
+
+
+def test_keeps_temperature_for_other_models(default_multi_llm: LitellmLLM) -> None:
+    with patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = []
+
+        messages: LanguageModelInput = [UserMessage(content="Hi")]
+        list(default_multi_llm.stream(messages))
+
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["temperature"] == 0.0
 
 
 @pytest.mark.parametrize("model_name", VERTEX_OPUS_MODELS_REJECTING_OUTPUT_CONFIG)
@@ -1459,6 +1541,213 @@ def test_no_tool_choice_sent_when_no_tools(default_multi_llm: LitellmLLM) -> Non
         default_multi_llm.invoke(messages, tools=None)
 
         _, kwargs = mock_completion.call_args
-        assert (
-            "tool_choice" not in kwargs
-        ), "tool_choice must not be sent to providers when no tools are provided"
+        assert "tool_choice" not in kwargs, (
+            "tool_choice must not be sent to providers when no tools are provided"
+        )
+
+
+def test_bifrost_normalizes_api_base_in_model_kwargs() -> None:
+    llm = LitellmLLM(
+        api_key="test_key",
+        api_base="https://bifrost.example.com/",
+        timeout=30,
+        model_provider=LlmProviderNames.BIFROST,
+        model_name="anthropic/claude-sonnet-4-6",
+        max_input_tokens=32000,
+    )
+
+    assert llm._custom_llm_provider == "openai"
+    assert llm._api_base == "https://bifrost.example.com/v1"
+    assert llm._model_kwargs["api_base"] == "https://bifrost.example.com/v1"
+
+
+def test_prompt_contains_tool_call_history_true() -> None:
+    from onyx.llm.multi_llm import _prompt_contains_tool_call_history
+
+    messages: LanguageModelInput = [
+        UserMessage(content="What's the weather?"),
+        AssistantMessage(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc_1",
+                    function=FunctionCall(name="get_weather", arguments="{}"),
+                )
+            ],
+        ),
+    ]
+    assert _prompt_contains_tool_call_history(messages) is True
+
+
+def test_prompt_contains_tool_call_history_false_no_tools() -> None:
+    from onyx.llm.multi_llm import _prompt_contains_tool_call_history
+
+    messages: LanguageModelInput = [
+        UserMessage(content="Hello"),
+        AssistantMessage(content="Hi there!"),
+    ]
+    assert _prompt_contains_tool_call_history(messages) is False
+
+
+def test_prompt_contains_tool_call_history_false_user_only() -> None:
+    from onyx.llm.multi_llm import _prompt_contains_tool_call_history
+
+    messages: LanguageModelInput = [UserMessage(content="Hello")]
+    assert _prompt_contains_tool_call_history(messages) is False
+
+
+def test_bedrock_claude_drops_thinking_when_thinking_blocks_missing() -> None:
+    """When thinking is enabled but assistant messages with tool_calls lack
+    thinking_blocks, the thinking param must be dropped to avoid the Bedrock
+    BadRequestError about missing thinking blocks."""
+    llm = LitellmLLM(
+        api_key=None,
+        timeout=30,
+        model_provider=LlmProviderNames.BEDROCK,
+        model_name="anthropic.claude-sonnet-4-20250514-v1:0",
+        max_input_tokens=200000,
+    )
+
+    messages: LanguageModelInput = [
+        UserMessage(content="What's the weather?"),
+        AssistantMessage(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc_1",
+                    function=FunctionCall(
+                        name="get_weather",
+                        arguments='{"city": "Paris"}',
+                    ),
+                )
+            ],
+        ),
+        onyx.llm.models.ToolMessage(
+            content="22°C sunny",
+            tool_call_id="tc_1",
+        ),
+    ]
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    with (
+        patch("litellm.completion") as mock_completion,
+        patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True),
+    ):
+        mock_completion.return_value = []
+
+        list(llm.stream(messages, tools=tools, reasoning_effort=ReasoningEffort.HIGH))
+
+        kwargs = mock_completion.call_args.kwargs
+        assert "thinking" not in kwargs, (
+            "thinking param should be dropped when thinking_blocks are missing "
+            "from assistant messages with tool_calls"
+        )
+
+
+def test_bedrock_claude_keeps_thinking_when_no_tool_history() -> None:
+    """When thinking is enabled and there are no historical assistant messages
+    with tool_calls, the thinking param should be preserved."""
+    llm = LitellmLLM(
+        api_key=None,
+        timeout=30,
+        model_provider=LlmProviderNames.BEDROCK,
+        model_name="anthropic.claude-sonnet-4-20250514-v1:0",
+        max_input_tokens=200000,
+    )
+
+    messages: LanguageModelInput = [
+        UserMessage(content="What's the weather?"),
+    ]
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    with (
+        patch("litellm.completion") as mock_completion,
+        patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True),
+    ):
+        mock_completion.return_value = []
+
+        list(llm.stream(messages, tools=tools, reasoning_effort=ReasoningEffort.HIGH))
+
+        kwargs = mock_completion.call_args.kwargs
+        assert "thinking" in kwargs, (
+            "thinking param should be preserved when no assistant messages "
+            "with tool_calls exist in history"
+        )
+        assert kwargs["thinking"]["type"] == "enabled"
+
+
+def test_bifrost_claude_includes_allowed_openai_params() -> None:
+    llm = LitellmLLM(
+        api_key="test_key",
+        api_base="https://bifrost.example.com",
+        timeout=30,
+        model_provider=LlmProviderNames.BIFROST,
+        model_name="anthropic/claude-sonnet-4-6",
+        max_input_tokens=32000,
+    )
+
+    messages: LanguageModelInput = [UserMessage(content="Use a tool if needed")]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up data",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    mock_stream_chunks = [
+        litellm.ModelResponse(
+            id="chatcmpl-123",
+            choices=[
+                litellm.Choices(
+                    delta=_create_delta(role="assistant", content="Done"),
+                    finish_reason="stop",
+                    index=0,
+                )
+            ],
+            model="anthropic/claude-sonnet-4-6",
+        ),
+    ]
+
+    with patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = mock_stream_chunks
+
+        llm.invoke(messages, tools=tools)
+
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["model"] == "anthropic/claude-sonnet-4-6"
+        assert kwargs["base_url"] == "https://bifrost.example.com/v1"
+        assert kwargs["custom_llm_provider"] == "openai"
+        assert kwargs["allowed_openai_params"] == ["tool_choice"]

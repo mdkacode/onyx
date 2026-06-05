@@ -2,11 +2,19 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
+from pydantic import Field
 
+from onyx.configs.app_configs import DEFAULT_PRUNING_FREQ
+from onyx.configs.app_configs import DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB
+from onyx.configs.app_configs import DISABLE_VECTOR_DB
+from onyx.configs.app_configs import MAX_ALLOWED_UPLOAD_SIZE_MB
 from onyx.configs.constants import NotificationType
 from onyx.configs.constants import QueryHistoryType
 from onyx.db.models import Notification as NotificationDBModel
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
+
+DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB = 200
+DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB = 10000
 
 
 class PageType(str, Enum):
@@ -20,6 +28,12 @@ class ApplicationStatus(str, Enum):
     GRACE_PERIOD = "grace_period"
     GATED_ACCESS = "gated_access"
     SEAT_LIMIT_EXCEEDED = "seat_limit_exceeded"
+
+
+class Tier(str, Enum):
+    COMMUNITY = "community"
+    BUSINESS = "business"
+    ENTERPRISE = "enterprise"
 
 
 class Notification(BaseModel):
@@ -58,7 +72,8 @@ class Settings(BaseModel):
     anonymous_user_enabled: bool | None = None
     invite_only_enabled: bool = False
     deep_research_enabled: bool | None = None
-    search_ui_enabled: bool | None = None
+    multi_model_chat_enabled: bool | None = True
+    search_ui_enabled: bool | None = True
 
     # Whether EE features are unlocked for use.
     # Depends on license status: True when the user has a valid license
@@ -67,18 +82,29 @@ class Settings(BaseModel):
     # This controls UI visibility of EE features (user groups, analytics, RBAC, etc.).
     ee_features_enabled: bool = False
 
+    # Resolved per-tenant tier for ENTERPRISE-only feature gating in the FE.
+    tier: Tier = Tier.COMMUNITY
+
     temperature_override_enabled: bool | None = False
     auto_scroll: bool | None = False
     query_history_type: QueryHistoryType | None = None
 
+    # Visibility-only: hides the sidebar page; query-history APIs + recording stay on.
+    hide_query_history_from_admin_panel: bool = False
+
     # Image processing settings
-    image_extraction_and_analysis_enabled: bool | None = False
-    search_time_image_analysis_enabled: bool | None = False
+    image_extraction_and_analysis_enabled: bool | None = True
     image_analysis_max_size_mb: int | None = 20
 
     # User Knowledge settings
     user_knowledge_enabled: bool | None = True
-    user_file_max_upload_size_mb: int | None = None
+    user_file_max_upload_size_mb: int | None = Field(
+        default=DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB, ge=0
+    )
+    file_token_count_threshold_k: int | None = Field(
+        default=None,
+        ge=0,  # thousands of tokens; None = context-aware default
+    )
 
     # Connector settings
     show_extra_connectors: bool | None = True
@@ -100,9 +126,31 @@ class UserSettings(Settings):
     tenant_id: str = POSTGRES_DEFAULT_SCHEMA
     # Feature flag for Onyx Craft (Build Mode) - used for server-side redirects
     onyx_craft_enabled: bool = False
+    # Dev/debug flag: when true, the FE renders a button that streams the
+    # user's sandbox pod's opencode-serve logs. Gated by the
+    # ENABLE_OPENCODE_DEBUGGING env var; never set in prod.
+    opencode_debugging_enabled: bool = False
     # True when a vector database (Vespa/OpenSearch) is available.
     # False when DISABLE_VECTOR_DB is set — connectors, RAG search, and
     # document sets are unavailable.
     vector_db_enabled: bool = True
+    # True when hooks are available: single-tenant EE deployments only.
+    hooks_enabled: bool = False
     # Application version, read from the ONYX_VERSION env var at startup.
     version: str | None = None
+    # Hard ceiling for user_file_max_upload_size_mb, derived from env var.
+    max_allowed_upload_size_mb: int = MAX_ALLOWED_UPLOAD_SIZE_MB
+    # Factory defaults so the frontend can show a "restore default" button.
+    default_pruning_freq: int = DEFAULT_PRUNING_FREQ
+    default_user_file_max_upload_size_mb: int = DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB
+    default_file_token_count_threshold_k: int = Field(
+        default_factory=lambda: (
+            DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_NO_VECTOR_DB
+            if DISABLE_VECTOR_DB
+            else DEFAULT_FILE_TOKEN_COUNT_THRESHOLD_K_VECTOR_DB
+        )
+    )
+    # True when the backend is running inside a container (Docker/Podman).
+    # The frontend uses this to default local-service URLs (e.g. Ollama,
+    # LM Studio) to host.docker.internal instead of localhost.
+    is_containerized: bool = False

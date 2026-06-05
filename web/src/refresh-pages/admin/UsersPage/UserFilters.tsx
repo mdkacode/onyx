@@ -1,20 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import {
-  SvgCheck,
-  SvgSlack,
-  SvgUser,
-  SvgUserManage,
-  SvgUsers,
-} from "@opal/icons";
+import { SvgCheck, SvgUser, SvgUserManage, SvgUsers } from "@opal/icons";
+import { SvgSlack } from "@opal/logos";
 import type { IconFunctionComponent } from "@opal/types";
-import FilterButton from "@/refresh-components/buttons/FilterButton";
-import Popover from "@/refresh-components/Popover";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { FilterButton } from "@opal/components";
+import { Popover } from "@opal/components";
+import { InputTypeIn } from "@opal/components";
 import LineItem from "@/refresh-components/buttons/LineItem";
 import Text from "@/refresh-components/texts/Text";
-import ShadowDiv from "@/refresh-components/ShadowDiv";
+import { ShadowDiv } from "@opal/components";
 import {
   UserRole,
   UserStatus,
@@ -167,7 +162,7 @@ export default function UserFilters({
         <Popover.Trigger asChild>
           <FilterButton
             aria-label="Filter by role"
-            leftIcon={SvgUsers}
+            icon={SvgUsers}
             active={hasRoleFilter}
             onClear={() => onRolesChange([])}
           >
@@ -191,6 +186,7 @@ export default function UserFilters({
                 <LineItem
                   key={role}
                   icon={isSelected ? SvgCheck : roleIcon}
+                  strokeIcon={isSelected || role !== UserRole.SLACK_USER}
                   selected={isSelected}
                   emphasized={isSelected}
                   onClick={() => toggleRole(role)}
@@ -215,7 +211,7 @@ export default function UserFilters({
         <Popover.Trigger asChild>
           <FilterButton
             aria-label="Filter by group"
-            leftIcon={SvgUsers}
+            icon={SvgUsers}
             active={hasGroupFilter}
             onClear={() => onGroupsChange([])}
           >
@@ -228,7 +224,7 @@ export default function UserFilters({
               value={groupSearch}
               onChange={(e) => setGroupSearch(e.target.value)}
               placeholder="Search groups..."
-              leftSearchIcon
+              searchIcon
               variant="internal"
             />
             <LineItem
@@ -270,7 +266,7 @@ export default function UserFilters({
         <Popover.Trigger asChild>
           <FilterButton
             aria-label="Filter by status"
-            leftIcon={SvgUsers}
+            icon={SvgUsers}
             active={hasStatusFilter}
             onClear={() => onStatusesChange([])}
           >

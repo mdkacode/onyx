@@ -53,7 +53,7 @@
  *   options={modelOptions}
  *   placeholder="Select model"
  *   isError={!!error}
- *   rightSection={<RefreshButton />}
+ *   rightChildren={<RefreshButton />}
  * />
  * ```
  *
@@ -91,11 +91,11 @@ import {
   shift,
   size,
 } from "@floating-ui/react-dom";
-import { cn, noProp } from "@/lib/utils";
-import InputTypeIn from "../InputTypeIn";
+import { noProp } from "@/lib/utils";
+import { cn } from "@opal/utils";
+import { InputTypeIn } from "@opal/components";
 import { FieldContext } from "../../form/FieldContext";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import { FieldMessage } from "../../messages/FieldMessage";
 
 // Hooks
@@ -114,7 +114,7 @@ import { ComboBoxDropdown } from "./components/ComboBoxDropdown";
 // Types
 import { InputComboBoxProps, ComboBoxOption } from "./types";
 import { SvgChevronDown, SvgChevronUp } from "@opal/icons";
-import { WithoutStyles } from "@/types";
+import type { WithoutStyles } from "@opal/types";
 
 const InputComboBox = ({
   value,
@@ -127,11 +127,12 @@ const InputComboBox = ({
   isError: externalIsError,
   onValidationError,
   name,
-  leftSearchIcon = false,
-  rightSection,
+  searchIcon = false,
+  rightChildren,
   separatorLabel = "Other options",
-  showAddPrefix = false,
+  createPrefix,
   showOtherOptions = false,
+  dropdownMaxHeight,
   ...rest
 }: WithoutStyles<InputComboBoxProps>) => {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -383,11 +384,10 @@ const InputComboBox = ({
           onFocus={handleFocus}
           onKeyDown={handleKeyDown}
           variant={disabled ? "disabled" : !isValid ? "error" : undefined}
-          leftSearchIcon={leftSearchIcon}
-          showClearButton={false}
-          rightSection={
+          searchIcon={searchIcon}
+          rightChildren={
             <>
-              {rightSection && (
+              {rightChildren && (
                 <div
                   className="flex items-center"
                   onPointerDown={(e) => {
@@ -397,21 +397,20 @@ const InputComboBox = ({
                     e.stopPropagation();
                   }}
                 >
-                  {rightSection}
+                  {rightChildren}
                 </div>
               )}
               {hasOptions && (
-                <Disabled disabled={disabled}>
-                  <Button
-                    prominence="tertiary"
-                    size="sm"
-                    onClick={noProp(toggleDropdown)}
-                    icon={isOpen ? SvgChevronUp : SvgChevronDown}
-                    aria-label={isOpen ? "Close dropdown" : "Open dropdown"}
-                    tabIndex={-1}
-                    type="button"
-                  />
-                </Disabled>
+                <Button
+                  disabled={disabled}
+                  prominence="tertiary"
+                  size="sm"
+                  onClick={noProp(toggleDropdown)}
+                  icon={isOpen ? SvgChevronUp : SvgChevronDown}
+                  aria-label={isOpen ? "Close dropdown" : "Open dropdown"}
+                  tabIndex={-1}
+                  type="button"
+                />
               )}
             </>
           }
@@ -448,7 +447,8 @@ const InputComboBox = ({
           inputValue={inputValue}
           allowCreate={!strict}
           showCreateOption={showCreateOption}
-          showAddPrefix={showAddPrefix}
+          createPrefix={createPrefix}
+          dropdownMaxHeight={dropdownMaxHeight}
         />
       </>
 

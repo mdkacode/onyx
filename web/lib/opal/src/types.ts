@@ -38,6 +38,35 @@ export type SizeVariants = "fit" | "full" | "lg" | "md" | "sm" | "xs" | "2xs";
 export type ContainerSizeVariants = Exclude<SizeVariants, "full">;
 
 /**
+ * Padding size variants.
+ *
+ * | Variant | Class   |
+ * |---------|---------|
+ * | `lg`    | `p-6`   |
+ * | `md`    | `p-4`   |
+ * | `sm`    | `p-2`   |
+ * | `xs`    | `p-1`   |
+ * | `2xs`   | `p-0.5` |
+ * | `fit`   | `p-0`   |
+ */
+export type PaddingVariants = Extract<
+  SizeVariants,
+  "fit" | "lg" | "md" | "sm" | "xs" | "2xs"
+>;
+
+/**
+ * Rounding size variants.
+ *
+ * | Variant | Class        |
+ * |---------|--------------|
+ * | `lg`    | `rounded-16` |
+ * | `md`    | `rounded-12` |
+ * | `sm`    | `rounded-08` |
+ * | `xs`    | `rounded-04` |
+ */
+export type RoundingVariants = Extract<SizeVariants, "lg" | "md" | "sm" | "xs">;
+
+/**
  * Extreme size variants ("fit" and "full" only).
  *
  * Used for width and height properties that only support extremal values.
@@ -51,6 +80,66 @@ export type ExtremaSizeVariants = Extract<SizeVariants, "fit" | "full">;
  * Used in components that need programmatic sizing flexibility.
  */
 export type OverridableExtremaSizeVariants = ExtremaSizeVariants | number;
+
+// ---------------------------------------------------------------------------
+// Orientation Variants
+// ---------------------------------------------------------------------------
+
+/** Axis orientation — `"horizontal"` or `"vertical"`. */
+export type OrientationVariants = "horizontal" | "vertical";
+
+// ---------------------------------------------------------------------------
+// Border Variants
+// ---------------------------------------------------------------------------
+
+/**
+ * Border style variants shared across card-like surfaces.
+ *
+ * - `"none"`: no border.
+ * - `"dashed"`: dashed border.
+ * - `"solid"`: solid border.
+ */
+export type BorderVariants = "none" | "dashed" | "solid";
+
+/**
+ * Background fill variants shared across card-like surfaces.
+ *
+ * - `"none"`: transparent background.
+ * - `"light"`: lightly tinted background.
+ * - `"heavy"`: heavily tinted background.
+ */
+export type BackgroundVariants = "none" | "light" | "heavy";
+
+// ---------------------------------------------------------------------------
+// Color Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Semantic color roles used across the design system for foreground, border,
+ * and other colorable surfaces.
+ *
+ * - `"default"` — standard text/border color (`text-04` / `border-01`)
+ * - `"muted"` — de-emphasized color (`text-03`)
+ * - `"danger"` — destructive / error state
+ * - `"interactive"` — follows the interactive coloring system (`currentColor` / `--interactive-foreground`)
+ */
+export type ColorTypes = "default" | "muted" | "danger" | "interactive";
+
+// ---------------------------------------------------------------------------
+// Status Variants
+// ---------------------------------------------------------------------------
+
+/**
+ * Severity / status variants used by alert-style components (e.g. {@link
+ * MessageCard}, {@link Card}'s `borderColor`). Each variant maps to a
+ * dedicated background/border/icon palette in the design system.
+ */
+export type StatusVariants =
+  | "default"
+  | "info"
+  | "success"
+  | "warning"
+  | "error";
 
 // ---------------------------------------------------------------------------
 // Icon Props
@@ -85,6 +174,55 @@ export interface IconProps extends SVGProps<SVGSVGElement> {
 
 /** Strips `className` and `style` from a props type to enforce design-system styling. */
 export type WithoutStyles<T> = Omit<T, "className" | "style">;
+
+// ---------------------------------------------------------------------------
+// Rich Strings
+// ---------------------------------------------------------------------------
+
+/**
+ * A branded string wrapper that signals inline markdown should be parsed.
+ *
+ * Created via the `markdown()` function. Components that accept `string | RichStr`
+ * will parse the inner `raw` string as inline markdown when a `RichStr` is passed,
+ * and render plain text when a regular `string` is passed.
+ *
+ * This avoids "API coloring" — components don't need a `markdown` boolean prop,
+ * and intermediate wrappers don't need to thread it through. The decision to
+ * use markdown lives at the call site via `markdown("*bold* text")`.
+ */
+export interface RichStr {
+  readonly __brand: "RichStr";
+  readonly raw: string;
+}
+
+// ---------------------------------------------------------------------------
+// Input Variants
+// ---------------------------------------------------------------------------
+
+/**
+ * Visual state variants for text input components.
+ *
+ * - `"primary"` — default editable state
+ * - `"internal"` — subtle/borderless style for inline use
+ * - `"error"` — error state with red border
+ * - `"disabled"` — non-interactive, grayed out
+ * - `"readOnly"` — visually transparent, not editable
+ */
+export type InputVariants =
+  | "primary"
+  | "internal"
+  | "error"
+  | "disabled"
+  | "readOnly";
+
+/**
+ * HTML button `type` attribute values.
+ *
+ * Used by interactive primitives and button-like components to indicate that
+ * the element is inherently interactive for cursor-styling purposes, even
+ * without an explicit `onClick` or `href`.
+ */
+export type ButtonType = "submit" | "button" | "reset";
 
 /** Like `Omit` but distributes over union types, preserving discriminated unions. */
 export type DistributiveOmit<T, K extends keyof any> = T extends any

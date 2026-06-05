@@ -1,17 +1,20 @@
 import time
-from collections import defaultdict
+from collections.abc import Callable
+from collections.abc import Iterable
 from http import HTTPStatus
+from itertools import chain
+from itertools import groupby
 
 import httpx
+import sentry_sdk
 
 from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import DocumentFailure
-from onyx.document_index.interfaces import DocumentIndex
-from onyx.document_index.interfaces import DocumentInsertionRecord
-from onyx.document_index.interfaces import IndexBatchParams
+from onyx.document_index.interfaces_new import DocumentIndex
+from onyx.document_index.interfaces_new import DocumentInsertionRecord
+from onyx.document_index.interfaces_new import IndexingMetadata
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.utils.logger import setup_logger
-
 
 logger = setup_logger()
 
@@ -28,30 +31,41 @@ def _log_insufficient_storage_error(e: Exception) -> None:
 
 def write_chunks_to_vector_db_with_backoff(
     document_index: DocumentIndex,
-    chunks: list[DocMetadataAwareIndexChunk],
-    index_batch_params: IndexBatchParams,
+    make_chunks: Callable[[], Iterable[DocMetadataAwareIndexChunk]],
+    indexing_metadata: IndexingMetadata,
+    tenant_id: str,
 ) -> tuple[list[DocumentInsertionRecord], list[ConnectorFailure]]:
     """Tries to insert all chunks in one large batch. If that batch fails for any reason,
     goes document by document to isolate the failure(s).
 
     IMPORTANT: must pass in whole documents at a time not individual chunks, since the
-    vector DB interface assumes that all chunks for a single document are present.
+    vector DB interface assumes that all chunks for a single document are present. The
+    chunks must also be in contiguous batches
     """
-
     # first try to write the chunks to the vector db
     try:
         return (
-            list(
-                document_index.index(
-                    chunks=chunks,
-                    index_batch_params=index_batch_params,
-                )
+            document_index.index(
+                chunks=make_chunks(),
+                indexing_metadata=indexing_metadata,
             ),
             [],
         )
     except Exception as e:
-        logger.exception(
-            "Failed to write chunk batch to vector db. Trying individual docs."
+        # The batch write failing just means we fall back to the per-doc
+        # retry loop below. It's only a real failure if the per-doc retry
+        # also fails — that path already logs/captures to Sentry per doc.
+        # Use warning here so a transient OpenSearch response timeout on
+        # the bulk write doesn't ship an event for every indexing batch.
+        # (urllib3 surfaces this as ReadTimeoutError because it has no
+        # separate write-timeout class; the client has already sent the
+        # bulk request and is waiting on OpenSearch's response, which is
+        # where the 60s read timeout fires when the server is slow to
+        # finish the bulk index.)
+        logger.warning(
+            "Failed to write chunk batch to vector db. Trying individual docs. Batch error: %s: %s",
+            type(e).__name__,
+            e,
         )
 
         # give some specific logging on this common failure case.
@@ -60,24 +74,39 @@ def write_chunks_to_vector_db_with_backoff(
         # wait a couple seconds just to give the vector db a chance to recover
         time.sleep(2)
 
-    # try writing each doc one by one
-    chunks_for_docs: dict[str, list[DocMetadataAwareIndexChunk]] = defaultdict(list)
-    for chunk in chunks:
-        chunks_for_docs[chunk.source_document.id].append(chunk)
-
     insertion_records: list[DocumentInsertionRecord] = []
     failures: list[ConnectorFailure] = []
-    for doc_id, chunks_for_doc in chunks_for_docs.items():
+
+    def key(chunk: DocMetadataAwareIndexChunk) -> str:
+        return chunk.source_document.id
+
+    seen_doc_ids: set[str] = set()
+    for doc_id, chunks_for_doc in groupby(make_chunks(), key=key):
+        if doc_id in seen_doc_ids:
+            raise RuntimeError(
+                f"Doc chunks are not arriving in order. Current doc_id={doc_id}, seen_doc_ids={list(seen_doc_ids)}"
+            )
+        seen_doc_ids.add(doc_id)
+
+        first_chunk = next(chunks_for_doc)
+        chunks_for_doc = chain([first_chunk], chunks_for_doc)
+
         try:
             insertion_records.extend(
                 document_index.index(
                     chunks=chunks_for_doc,
-                    index_batch_params=index_batch_params,
+                    indexing_metadata=indexing_metadata,
                 )
             )
         except Exception as e:
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("stage", "vector_db_write")
+                scope.set_tag("doc_id", doc_id)
+                scope.set_tag("tenant_id", tenant_id)
+                scope.fingerprint = ["vector-db-write-failure", type(e).__name__]
+                sentry_sdk.capture_exception(e)
             logger.exception(
-                f"Failed to write document chunks for '{doc_id}' to vector db"
+                "Failed to write document chunks for '%s' to vector db", doc_id
             )
 
             # give some specific logging on this common failure case.
@@ -87,9 +116,7 @@ def write_chunks_to_vector_db_with_backoff(
                 ConnectorFailure(
                     failed_document=DocumentFailure(
                         document_id=doc_id,
-                        document_link=(
-                            chunks_for_doc[0].get_link() if chunks_for_doc else None
-                        ),
+                        document_link=first_chunk.get_link(),
                     ),
                     failure_message=str(e),
                     exception=e,

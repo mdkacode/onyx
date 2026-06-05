@@ -1,11 +1,8 @@
-import Text from "@/refresh-components/texts/Text";
+import { Text, CopyButton } from "@opal/components";
 import { Section } from "@/layouts/general-layouts";
 import { PreviewVariant } from "@/sections/modals/PreviewModal/interfaces";
 import { CodePreview } from "@/sections/modals/PreviewModal/variants/CodePreview";
-import {
-  CopyButton,
-  DownloadButton,
-} from "@/sections/modals/PreviewModal/variants/shared";
+import { DownloadButton } from "@/sections/modals/PreviewModal/variants/shared";
 
 const TEXT_MIMES = [
   "text/plain",
@@ -25,7 +22,7 @@ export const textVariant: PreviewVariant = {
     const lowerName = (name || "").toLowerCase();
     return TEXT_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
   },
-  width: "md",
+  width: "xl",
   height: "lg",
   needsTextContent: true,
   codeBackground: true,
@@ -41,14 +38,18 @@ export const textVariant: PreviewVariant = {
   ),
 
   renderFooterLeft: (ctx) => (
-    <Text text03 mainUiBody className="select-none">
-      {ctx.lineCount} {ctx.lineCount === 1 ? "line" : "lines"}
+    <Text font="main-ui-body" color="text-03">
+      {`${ctx.lineCount} ${ctx.lineCount === 1 ? "line" : "lines"}`}
     </Text>
   ),
 
   renderFooterRight: (ctx) => (
     <Section flexDirection="row" width="fit">
-      <CopyButton getText={() => ctx.fileContent} />
+      <CopyButton
+        size="sm"
+        tooltip="Copy content"
+        getCopyText={() => ctx.fileContent}
+      />
       <DownloadButton fileUrl={ctx.fileUrl} fileName={ctx.fileName} />
     </Section>
   ),

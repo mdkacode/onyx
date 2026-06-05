@@ -40,6 +40,8 @@ def test_send_task_includes_expires(
         user_files=user_files,
         rejected_files=[],
         id_to_temp_id={},
+        skip_indexing_filenames=set(),
+        indexable_files=user_files,
     )
 
     mock_user = MagicMock()
@@ -58,6 +60,6 @@ def test_send_task_includes_expires(
     for call in mock_client_app.send_task.call_args_list:
         assert call.args[0] == OnyxCeleryTask.PROCESS_SINGLE_USER_FILE
         assert call.kwargs.get("queue") == OnyxCeleryQueues.USER_FILE_PROCESSING
-        assert (
-            call.kwargs.get("expires") == CELERY_USER_FILE_PROCESSING_TASK_EXPIRES
-        ), "send_task must include expires= to prevent phantom task accumulation"
+        assert call.kwargs.get("expires") == CELERY_USER_FILE_PROCESSING_TASK_EXPIRES, (
+            "send_task must include expires= to prevent phantom task accumulation"
+        )

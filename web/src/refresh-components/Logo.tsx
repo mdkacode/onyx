@@ -1,27 +1,33 @@
 "use client";
 
-import { OnyxIcon, OnyxLogoTypeIcon } from "@/components/icons/icons";
 import { useSettingsContext } from "@/providers/SettingsProvider";
 import {
-  LOGO_FOLDED_SIZE_PX,
-  LOGO_UNFOLDED_SIZE_PX,
+  DEFAULT_LOGO_SIZE_PX,
   NAARNI_GYAN_VERSION,
   NEXT_PUBLIC_DO_NOT_USE_TOGGLE_OFF_DANSWER_POWERED,
 } from "@/lib/constants";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 import Text from "@/refresh-components/texts/Text";
 import Truncated from "@/refresh-components/texts/Truncated";
 import { useMemo } from "react";
+import { SvgOnyxLogo, SvgOnyxLogoTyped } from "@opal/logos";
 
 export interface LogoProps {
   folded?: boolean;
   size?: number;
   className?: string;
+  // Always render the real Onyx logo, ignoring enterprise white-label settings
+  // (custom logo / application name). Used by Onyx-branded surfaces like Craft.
+  onyxBranded?: boolean;
 }
 
-export default function Logo({ folded, size, className }: LogoProps) {
-  const foldedSize = size ?? LOGO_FOLDED_SIZE_PX;
-  const unfoldedSize = size ?? LOGO_UNFOLDED_SIZE_PX;
+export default function Logo({
+  folded,
+  size,
+  className,
+  onyxBranded,
+}: LogoProps) {
+  const resolvedSize = size ?? DEFAULT_LOGO_SIZE_PX;
   const settings = useSettingsContext();
   const logoDisplayStyle = settings.enterpriseSettings?.logo_display_style;
   const applicationName = settings.enterpriseSettings?.application_name;
@@ -37,13 +43,21 @@ export default function Logo({ folded, size, className }: LogoProps) {
     [settings.enterpriseSettings]
   );
 
+  if (onyxBranded) {
+    return folded ? (
+      <SvgOnyxLogo size={resolvedSize} className={cn("shrink-0", className)} />
+    ) : (
+      <SvgOnyxLogoTyped size={resolvedSize} className={className} />
+    );
+  }
+
   const logo = settings.enterpriseSettings?.use_custom_logo ? (
     <div
       className={cn(
-        "aspect-square rounded-full overflow-hidden relative flex-shrink-0",
+        "aspect-square rounded-full overflow-hidden relative shrink-0",
         className
       )}
-      style={{ height: foldedSize, width: foldedSize }}
+      style={{ height: resolvedSize }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
@@ -53,7 +67,7 @@ export default function Logo({ folded, size, className }: LogoProps) {
       />
     </div>
   ) : (
-    <OnyxIcon size={foldedSize} className={cn("flex-shrink-0", className)} />
+    <SvgOnyxLogo size={resolvedSize} className={cn("shrink-0", className)} />
   );
 
   const renderNameAndPoweredBy = (opts: {
@@ -99,8 +113,8 @@ export default function Logo({ folded, size, className }: LogoProps) {
   return applicationName ? (
     renderNameAndPoweredBy({ includeLogo: true, includeName: true })
   ) : folded ? (
-    <OnyxIcon size={foldedSize} className={cn("flex-shrink-0", className)} />
+    <SvgOnyxLogo size={resolvedSize} className={cn("shrink-0", className)} />
   ) : (
-    <OnyxLogoTypeIcon size={unfoldedSize} className={className} />
+    <SvgOnyxLogoTyped size={resolvedSize} className={className} />
   );
 }

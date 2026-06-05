@@ -54,6 +54,9 @@ module "postgres" {
   password            = var.postgres_password
   tags                = local.merged_tags
   enable_rds_iam_auth = var.enable_iam_auth
+
+  backup_retention_period = var.postgres_backup_retention_period
+  backup_window           = var.postgres_backup_window
 }
 
 module "s3" {
@@ -71,6 +74,10 @@ module "eks" {
   tags            = local.merged_tags
   s3_bucket_names = [local.bucket_name]
 
+  main_node_subnet_ids = length(var.main_node_subnet_ids) > 0 ? var.main_node_subnet_ids : (
+    var.main_node_private_subnets_only ? local.private_subnets : []
+  )
+
   # Wire RDS IAM connection for the same IRSA service account used by apps
   enable_rds_iam_for_service_account = var.enable_iam_auth
   rds_db_username                    = var.postgres_username
@@ -80,6 +87,10 @@ module "eks" {
   public_cluster_enabled               = var.public_cluster_enabled
   private_cluster_enabled              = var.private_cluster_enabled
   cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+
+  # Control plane logging
+  cluster_enabled_log_types              = var.eks_cluster_enabled_log_types
+  cloudwatch_log_group_retention_in_days = var.eks_cloudwatch_log_group_retention_in_days
 }
 
 module "waf" {

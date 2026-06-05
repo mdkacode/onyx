@@ -9,21 +9,20 @@ from pydantic import ConfigDict
 from pydantic import Field
 from sqlalchemy.orm import Session
 
-from onyx.configs.app_configs import FILE_TOKEN_COUNT_THRESHOLD
-from onyx.configs.app_configs import USER_FILE_MAX_UPLOAD_SIZE_BYTES
-from onyx.configs.app_configs import USER_FILE_MAX_UPLOAD_SIZE_MB
+from onyx.configs.app_configs import MAX_EMBEDDED_IMAGES_PER_FILE
+from onyx.configs.app_configs import MAX_EMBEDDED_IMAGES_PER_UPLOAD
+from onyx.configs.llm_configs import get_image_extraction_and_analysis_enabled
 from onyx.db.llm import fetch_default_llm_model
+from onyx.file_processing.extract_file_text import count_docx_embedded_images
+from onyx.file_processing.extract_file_text import count_pdf_embedded_images
 from onyx.file_processing.extract_file_text import extract_file_text
 from onyx.file_processing.extract_file_text import get_file_ext
 from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.file_processing.password_validation import is_file_password_protected
+from onyx.natural_language_processing.utils import count_tokens
 from onyx.natural_language_processing.utils import get_tokenizer
+from onyx.server.settings.store import load_settings
 from onyx.utils.logger import setup_logger
-from shared_configs.configs import MULTI_TENANT
-from shared_configs.configs import SKIP_USERFILE_THRESHOLD
-from shared_configs.configs import SKIP_USERFILE_THRESHOLD_TENANT_LIST
-from shared_configs.contextvars import get_current_tenant_id
-
 
 logger = setup_logger()
 UNKNOWN_FILENAME = "[unknown_file]"  # More descriptive than empty string
@@ -50,9 +49,10 @@ def get_upload_size_bytes(upload: UploadFile) -> int | None:
         return size
     except Exception as e:
         logger.warning(
-            "Could not determine upload size via stream seek "
-            f"(filename='{get_safe_filename(upload)}', "
-            f"error_type={type(e).__name__}, error={e})"
+            "Could not determine upload size via stream seek (filename='%s', error_type=%s, error=%s)",
+            get_safe_filename(upload),
+            type(e).__name__,
+            e,
         )
         return None
 
@@ -62,7 +62,8 @@ def is_upload_too_large(upload: UploadFile, max_bytes: int) -> bool:
     size_bytes = get_upload_size_bytes(upload)
     if size_bytes is None:
         logger.warning(
-            f"Could not determine upload size; skipping size-limit check for '{get_safe_filename(upload)}'"
+            "Could not determine upload size; skipping size-limit check for '%s'",
+            get_safe_filename(upload),
         )
         return False
     return size_bytes > max_bytes
@@ -81,9 +82,16 @@ class CategorizedFiles(BaseModel):
     acceptable: list[UploadFile] = Field(default_factory=list)
     rejected: list[RejectedFile] = Field(default_factory=list)
     acceptable_file_to_token_count: dict[str, int] = Field(default_factory=dict)
+    # Filenames within `acceptable` that should be stored but not indexed.
+    skip_indexing: set[str] = Field(default_factory=set)
 
     # Allow FastAPI UploadFile instances
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+def _skip_token_threshold(extension: str) -> bool:
+    """Return True if this file extension should bypass the token limit."""
+    return extension.lower() in OnyxFileExtensions.TABULAR_EXTENSIONS
 
 
 def _apply_long_side_cap(width: int, height: int, cap: int) -> tuple[int, int]:
@@ -161,8 +169,8 @@ def categorize_uploaded_files(
       document formats (.pdf, .docx, …) and falls back to a text-detection
       heuristic for unknown extensions (.py, .js, .rs, …).
     - Uses default tokenizer to compute token length.
-    - If token length > threshold, reject file (unless threshold skip is enabled).
-    - If text cannot be extracted, reject file.
+    - If token length exceeds the admin-configured threshold, reject file.
+    - If extension unsupported or text cannot be extracted, reject file.
     - Otherwise marked as acceptable.
     """
 
@@ -173,36 +181,41 @@ def categorize_uploaded_files(
     provider_type = default_model.llm_provider.provider if default_model else None
     tokenizer = get_tokenizer(model_name=model_name, provider_type=provider_type)
 
-    # Check if threshold checks should be skipped
-    skip_threshold = False
+    # Derive limits from admin-configurable settings.
+    # For upload size: load_settings() resolves 0/None to a positive default.
+    # For token threshold: 0 means "no limit" (converted to None below).
+    settings = load_settings()
+    max_upload_size_mb = (
+        settings.user_file_max_upload_size_mb
+    )  # always positive after load_settings()
+    max_upload_size_bytes = (
+        max_upload_size_mb * 1024 * 1024 if max_upload_size_mb else None
+    )
+    token_threshold_k = settings.file_token_count_threshold_k
+    token_threshold = (
+        token_threshold_k * 1000 if token_threshold_k else None
+    )  # 0 → None = no limit
 
-    # Check global skip flag (works for both single-tenant and multi-tenant)
-    if SKIP_USERFILE_THRESHOLD:
-        skip_threshold = True
-        logger.info("Skipping userfile threshold check (global setting)")
-    # Check tenant-specific skip list (only applicable in multi-tenant)
-    elif MULTI_TENANT and SKIP_USERFILE_THRESHOLD_TENANT_LIST:
-        try:
-            current_tenant_id = get_current_tenant_id()
-            skip_threshold = current_tenant_id in SKIP_USERFILE_THRESHOLD_TENANT_LIST
-            if skip_threshold:
-                logger.info(
-                    f"Skipping userfile threshold check for tenant: {current_tenant_id}"
-                )
-        except RuntimeError as e:
-            logger.warning(f"Failed to get current tenant ID: {str(e)}")
+    # Running total of embedded images across PDFs in this batch. Once the
+    # aggregate cap is reached, subsequent PDFs in the same upload are
+    # rejected even if they'd individually fit under MAX_EMBEDDED_IMAGES_PER_FILE.
+    batch_image_total = 0
+
+    # Hoisted out of the loop to avoid a KV-store lookup per file.
+    image_extraction_enabled = get_image_extraction_and_analysis_enabled()
 
     for upload in files:
         try:
             filename = get_safe_filename(upload)
 
-            # Size limit is a hard safety cap and is enforced even when token
-            # threshold checks are skipped via SKIP_USERFILE_THRESHOLD settings.
-            if is_upload_too_large(upload, USER_FILE_MAX_UPLOAD_SIZE_BYTES):
+            # Size limit is a hard safety cap.
+            if max_upload_size_bytes is not None and is_upload_too_large(
+                upload, max_upload_size_bytes
+            ):
                 results.rejected.append(
                     RejectedFile(
                         filename=filename,
-                        reason=f"Exceeds {USER_FILE_MAX_UPLOAD_SIZE_MB} MB file size limit",
+                        reason=f"Exceeds {max_upload_size_mb} MB file size limit",
                     )
                 )
                 continue
@@ -215,7 +228,7 @@ def categorize_uploaded_files(
                     token_count = estimate_image_tokens_for_upload(upload)
                 except (UnidentifiedImageError, OSError) as e:
                     logger.warning(
-                        f"Failed to process image file '{filename}': {str(e)}"
+                        "Failed to process image file '%s': %s", filename, str(e)
                     )
                     results.rejected.append(
                         RejectedFile(
@@ -224,11 +237,11 @@ def categorize_uploaded_files(
                     )
                     continue
 
-                if not skip_threshold and token_count > FILE_TOKEN_COUNT_THRESHOLD:
+                if token_threshold is not None and token_count > token_threshold:
                     results.rejected.append(
                         RejectedFile(
                             filename=filename,
-                            reason=f"Exceeds {FILE_TOKEN_COUNT_THRESHOLD} token limit",
+                            reason=f"Exceeds {token_threshold_k}K token limit",
                         )
                     )
                 else:
@@ -245,13 +258,59 @@ def categorize_uploaded_files(
                     file_name=filename,
                     extension=extension,
                 ):
-                    logger.warning(f"{filename} is password protected")
+                    logger.warning("%s is password protected", filename)
                     results.rejected.append(
                         RejectedFile(
                             filename=filename, reason="Document is password protected"
                         )
                     )
                     continue
+
+                # Reject documents with an unreasonable number of embedded
+                # images (either per-file or accumulated across this upload
+                # batch). A file with thousands of embedded images can OOM the
+                # user-file-processing celery worker because every image is
+                # decoded with PIL and then sent to the vision LLM.
+                count: int = 0
+                image_bearing_ext = extension in (".pdf", ".docx")
+                if image_bearing_ext:
+                    file_cap = MAX_EMBEDDED_IMAGES_PER_FILE
+                    batch_cap = MAX_EMBEDDED_IMAGES_PER_UPLOAD
+                    # Use the larger of the two caps as the short-circuit
+                    # threshold so we get a useful count for both checks.
+                    # These helpers restore the stream position.
+                    counter = (
+                        count_pdf_embedded_images
+                        if extension == ".pdf"
+                        else count_docx_embedded_images
+                    )
+                    count = counter(upload.file, max(file_cap, batch_cap))
+                    if count > file_cap:
+                        results.rejected.append(
+                            RejectedFile(
+                                filename=filename,
+                                reason=(
+                                    f"Document contains too many embedded "
+                                    f"images (more than {file_cap}). Try "
+                                    f"splitting it into smaller files."
+                                ),
+                            )
+                        )
+                        continue
+                    if batch_image_total + count > batch_cap:
+                        results.rejected.append(
+                            RejectedFile(
+                                filename=filename,
+                                reason=(
+                                    f"Upload would exceed the "
+                                    f"{batch_cap}-image limit across all "
+                                    f"files in this batch. Try uploading "
+                                    f"fewer image-heavy files at once."
+                                ),
+                            )
+                        )
+                        continue
+                    batch_image_total += count
 
                 text_content = extract_file_text(
                     file=upload.file,
@@ -260,7 +319,24 @@ def categorize_uploaded_files(
                     extension=extension,
                 )
                 if not text_content:
-                    logger.warning(f"No text content extracted from '{filename}'")
+                    # Documents with embedded images (e.g. scans) have no
+                    # extractable text but can still be indexed via the
+                    # vision-LLM captioning path when image analysis is
+                    # enabled.
+                    if image_bearing_ext and count > 0 and image_extraction_enabled:
+                        results.acceptable.append(upload)
+                        results.acceptable_file_to_token_count[filename] = 0
+                        try:
+                            upload.file.seek(0)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to reset file pointer for '%s': %s",
+                                filename,
+                                str(e),
+                            )
+                        continue
+
+                    logger.warning("No text content extracted from '%s'", filename)
                     results.rejected.append(
                         RejectedFile(
                             filename=filename,
@@ -269,12 +345,24 @@ def categorize_uploaded_files(
                     )
                     continue
 
-                token_count = len(tokenizer.encode(text_content))
-                if not skip_threshold and token_count > FILE_TOKEN_COUNT_THRESHOLD:
+                token_count = count_tokens(
+                    text_content, tokenizer, token_limit=token_threshold
+                )
+                exceeds_threshold = (
+                    token_threshold is not None and token_count > token_threshold
+                )
+                if exceeds_threshold and _skip_token_threshold(extension):
+                    # Exempt extensions (e.g. spreadsheets) are accepted
+                    # but flagged to skip indexing — only metadata is
+                    # injected into the LLM context.
+                    results.acceptable.append(upload)
+                    results.acceptable_file_to_token_count[filename] = token_count
+                    results.skip_indexing.add(filename)
+                elif exceeds_threshold:
                     results.rejected.append(
                         RejectedFile(
                             filename=filename,
-                            reason=f"Exceeds {FILE_TOKEN_COUNT_THRESHOLD} token limit",
+                            reason=f"Exceeds {token_threshold_k}K token limit",
                         )
                     )
                 else:
@@ -286,11 +374,14 @@ def categorize_uploaded_files(
                     upload.file.seek(0)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to reset file pointer for '{filename}': {str(e)}"
+                        "Failed to reset file pointer for '%s': %s", filename, str(e)
                     )
         except Exception as e:
             logger.warning(
-                f"Failed to process uploaded file '{get_safe_filename(upload)}' (error_type={type(e).__name__}, error={str(e)})"
+                "Failed to process uploaded file '%s' (error_type=%s, error=%s)",
+                get_safe_filename(upload),
+                type(e).__name__,
+                str(e),
             )
             results.rejected.append(
                 RejectedFile(

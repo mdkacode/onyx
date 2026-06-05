@@ -4,7 +4,9 @@ import { Button } from "@opal/components";
 import { Disabled } from "@opal/core";
 import { SvgArrowRight, SvgChevronLeft, SvgChevronRight } from "@opal/icons";
 import { containerSizeVariants } from "@opal/shared";
-import type { WithoutStyles } from "@opal/types";
+import type { RichStr, WithoutStyles } from "@opal/types";
+import { Text } from "@opal/components";
+import { toPlainString } from "@opal/components/text/InlineMarkdown";
 import { cn } from "@opal/utils";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import {
@@ -24,8 +26,10 @@ type PaginationSize = "lg" | "md" | "sm";
 /**
  * Compact `currentPage / totalPages` display with prev/next arrows.
  */
-interface SimplePaginationProps
-  extends Omit<WithoutStyles<HTMLAttributes<HTMLDivElement>>, "onChange"> {
+interface SimplePaginationProps extends Omit<
+  WithoutStyles<HTMLAttributes<HTMLDivElement>>,
+  "onChange"
+> {
   variant: "simple";
   /** The 1-based current page number. */
   currentPage: number;
@@ -38,15 +42,17 @@ interface SimplePaginationProps
   /** Hides the `currentPage/totalPages` summary text between arrows. Default: `false`. */
   hidePages?: boolean;
   /** Unit label shown after the summary (e.g. `"pages"`). Always has 4px spacing. */
-  units?: string;
+  units?: string | RichStr;
 }
 
 /**
  * Item-count display (`X~Y of Z`) with prev/next arrows.
  * Designed for table footers.
  */
-interface CountPaginationProps
-  extends Omit<WithoutStyles<HTMLAttributes<HTMLDivElement>>, "onChange"> {
+interface CountPaginationProps extends Omit<
+  WithoutStyles<HTMLAttributes<HTMLDivElement>>,
+  "onChange"
+> {
   variant: "count";
   /** The 1-based current page number. */
   currentPage: number;
@@ -63,15 +69,17 @@ interface CountPaginationProps
   /** Hides the current page number between the arrows. Default: `false`. */
   hidePages?: boolean;
   /** Unit label shown after the total count (e.g. `"items"`). Always has 4px spacing. */
-  units?: string;
+  units?: string | RichStr;
 }
 
 /**
  * Numbered page buttons with ellipsis truncation for large page counts.
  * This is the default variant.
  */
-interface ListPaginationProps
-  extends Omit<WithoutStyles<HTMLAttributes<HTMLDivElement>>, "onChange"> {
+interface ListPaginationProps extends Omit<
+  WithoutStyles<HTMLAttributes<HTMLDivElement>>,
+  "onChange"
+> {
   variant?: "list";
   /** The 1-based current page number. */
   currentPage: number;
@@ -251,9 +259,9 @@ function GoToPagePopup({ totalPages, onSubmit, children }: GoToPagePopupProps) {
             placeholder="Go to page"
             autoFocus
             className={cn(
-              "w-[7rem] bg-transparent px-1.5 py-1 rounded-08",
+              "w-28 bg-transparent px-1.5 py-1 rounded-08",
               containerSizeVariants.lg.height,
-              "border border-border-02 focus:outline-none focus:border-border-04",
+              "border border-border-02 focus:outline-hidden focus:border-border-04",
               "font-main-ui-body",
               "text-text-04 placeholder:text-text-02"
             )}
@@ -331,7 +339,9 @@ function PaginationSimple({
 }: SimplePaginationProps) {
   const handleChange = (page: number) => onChange?.(page);
 
-  const label = `${currentPage}/${totalPages}${units ? ` ${units}` : ""}`;
+  const label = `${currentPage}/${totalPages}${
+    units ? ` ${toPlainString(units)}` : ""
+  }`;
 
   return (
     <div {...props} className="flex items-center">
@@ -385,7 +395,14 @@ function PaginationCount({
         {rangeStart}~{rangeEnd}
         <span className={textClasses(size, "muted")}>of</span>
         {totalItems}
-        {units && <span className="ml-1">{units}</span>}
+        {units && (
+          <Text
+            color="inherit"
+            font={size === "sm" ? "secondary-body" : "main-ui-muted"}
+          >
+            {units}
+          </Text>
+        )}
       </span>
 
       {/* Buttons: < [page] > */}

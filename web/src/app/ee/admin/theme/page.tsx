@@ -1,9 +1,8 @@
 "use client";
 
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { SettingsLayouts } from "@opal/layouts";
 import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import {
   AppearanceThemeSettings,
   AppearanceThemeSettingsRef,
@@ -15,6 +14,7 @@ import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { EnterpriseSettings } from "@/interfaces/settings";
 import { mutate } from "swr";
+import { SWR_KEYS } from "@/lib/swr-keys";
 
 const route = ADMIN_ROUTES.THEME;
 
@@ -49,12 +49,12 @@ export default function ThemePage() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        ...(enterpriseSettings || {}),
+        ...enterpriseSettings,
         ...newValues,
       }),
     });
     if (response.ok) {
-      await mutate("/api/enterprise-settings");
+      await mutate(SWR_KEYS.enterpriseSettings);
       return true;
     } else {
       const errorMsg = (await response.json()).detail;
@@ -125,6 +125,27 @@ export default function ThemePage() {
         then: (schema) => schema.required("Notice Consent Prompt is required"),
         otherwise: (schema) => schema.nullable(),
       }),
+    custom_help_link_label: Yup.string().nullable(),
+    custom_help_link_url: Yup.string()
+      .nullable()
+      .when("custom_help_link_label", {
+        is: (label: string | null | undefined) =>
+          typeof label === "string" && label.trim().length > 0,
+        then: (schema) =>
+          schema
+            .required("URL is required when a label is set")
+            .url("Must be a valid URL"),
+        otherwise: (schema) =>
+          schema.test(
+            "optional-url",
+            "Must be a valid URL",
+            (value) =>
+              value == null ||
+              value === "" ||
+              Yup.string().url().isValidSync(value)
+          ),
+      }),
+    hide_onyx_branding: Yup.boolean().nullable(),
   });
 
   return (
@@ -146,6 +167,10 @@ export default function ThemePage() {
         enable_consent_screen:
           enterpriseSettings?.enable_consent_screen || false,
         consent_screen_prompt: enterpriseSettings?.consent_screen_prompt || "",
+        custom_help_link_url: enterpriseSettings?.custom_help_link_url || "",
+        custom_help_link_label:
+          enterpriseSettings?.custom_help_link_label || "",
+        hide_onyx_branding: enterpriseSettings?.hide_onyx_branding || false,
       }}
       validationSchema={validationSchema}
       validateOnChange={false}
@@ -190,6 +215,9 @@ export default function ThemePage() {
           show_first_visit_notice: values.show_first_visit_notice || null,
           enable_consent_screen: values.enable_consent_screen || null,
           consent_screen_prompt: values.consent_screen_prompt || null,
+          custom_help_link_url: values.custom_help_link_url?.trim() || null,
+          custom_help_link_label: values.custom_help_link_label?.trim() || null,
+          hide_onyx_branding: values.hide_onyx_branding ?? null,
         });
 
         // Important: after a successful save, reset Formik's "baseline" so
@@ -224,26 +252,21 @@ export default function ThemePage() {
                 description="Customize how the application appears to users across your organization."
                 icon={route.icon}
                 rightChildren={
-                  <Disabled
+                  <Button
                     disabled={isSubmitting || (!dirty && !hasLogoChange)}
+                    type="button"
+                    onClick={async () => {
+                      const errors = await validateForm();
+                      if (Object.keys(errors).length > 0) {
+                        setErrors(errors);
+                        appearanceSettingsRef.current?.focusFirstError(errors);
+                        return;
+                      }
+                      await submitForm();
+                    }}
                   >
-                    <Button
-                      type="button"
-                      onClick={async () => {
-                        const errors = await validateForm();
-                        if (Object.keys(errors).length > 0) {
-                          setErrors(errors);
-                          appearanceSettingsRef.current?.focusFirstError(
-                            errors
-                          );
-                          return;
-                        }
-                        await submitForm();
-                      }}
-                    >
-                      {isSubmitting ? "Applying..." : "Apply Changes"}
-                    </Button>
-                  </Disabled>
+                    {isSubmitting ? "Applying..." : "Apply Changes"}
+                  </Button>
                 }
               />
               <SettingsLayouts.Body>

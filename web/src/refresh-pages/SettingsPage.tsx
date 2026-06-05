@@ -1,10 +1,15 @@
 "use client";
 
-import { useRef, useCallback, useEffect, useState } from "react";
+import { useRef, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import * as InputLayouts from "@/layouts/input-layouts";
 import { Section, AttachmentItemLayout } from "@/layouts/general-layouts";
-import { Content, ContentAction } from "@opal/layouts";
+import {
+  Content,
+  ContentAction,
+  InputHorizontal,
+  InputVertical,
+} from "@opal/layouts";
+import { markdown } from "@opal/utils";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import {
@@ -13,16 +18,17 @@ import {
   SvgLock,
   SvgMinusCircle,
   SvgPlug,
+  SvgPlusCircle,
   SvgTrash,
   SvgUnplug,
 } from "@opal/icons";
 import { getSourceMetadata } from "@/lib/sources";
 import Card from "@/refresh-components/cards/Card";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { InputTypeIn } from "@opal/components";
 import PasswordInputTypeIn from "@/refresh-components/inputs/PasswordInputTypeIn";
 import InputSelect from "@/refresh-components/inputs/InputSelect";
 import InputTextArea from "@/refresh-components/inputs/InputTextArea";
-import Switch from "@/refresh-components/inputs/Switch";
+import { Switch } from "@opal/components";
 import { useUser } from "@/providers/UserProvider";
 import { useTheme } from "next-themes";
 import { MemoryItem, ThemePreference } from "@/lib/types";
@@ -33,24 +39,23 @@ import { deleteAllChatSessions } from "@/app/app/services/lib";
 import { useAuthType, useLlmManager } from "@/lib/hooks";
 import useChatSessions from "@/hooks/useChatSessions";
 import useSWR from "swr";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import useFilter from "@/hooks/useFilter";
-import CreateButton from "@/refresh-components/buttons/CreateButton";
-import { Button } from "@opal/components";
+import { Button, Divider, Checkbox, Text } from "@opal/components";
 import useFederatedOAuthStatus from "@/hooks/useFederatedOAuthStatus";
 import useNaarniAccount from "@/hooks/useNaarniAccount";
 import useCCPairs from "@/hooks/useCCPairs";
 import { ValidSources } from "@/lib/types";
 import { ConnectorCredentialPairStatus } from "@/app/admin/connector/[ccPairId]/types";
-import Separator from "@/refresh-components/Separator";
-import Text from "@/refresh-components/texts/Text";
 import ConfirmationModalLayout from "@/refresh-components/layouts/ConfirmationModalLayout";
-import Code from "@/refresh-components/Code";
+import Modal, { BasicModalFooter } from "@/refresh-components/Modal";
+import { Code, CopyButton } from "@opal/components";
 import CharacterCount from "@/refresh-components/CharacterCount";
 import { InputPrompt } from "@/app/app/interfaces";
 import usePromptShortcuts from "@/hooks/usePromptShortcuts";
 import ColorSwatch from "@/refresh-components/ColorSwatch";
-import EmptyMessage from "@/refresh-components/EmptyMessage";
+import { EmptyMessageCard } from "@opal/components";
 import Memories from "@/sections/settings/Memories";
 import { FederatedConnectorOAuthStatus } from "@/components/chat/FederatedOAuthModal";
 import {
@@ -58,12 +63,14 @@ import {
   CHAT_BACKGROUND_NONE,
 } from "@/lib/constants/chatBackgrounds";
 import { SvgCheck } from "@opal/icons";
-import { cn } from "@/lib/utils";
-import { Disabled, Interactive } from "@opal/core";
-import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidEnterpriseFeaturesEnabled";
+import { cn } from "@opal/utils";
+import { Interactive } from "@opal/core";
+import { useTierAtLeast } from "@/hooks/useTierAtLeast";
+import { Tier } from "@/interfaces/settings";
 import { useSettingsContext } from "@/providers/SettingsProvider";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Tooltip } from "@opal/components";
 import { useCloudSubscription } from "@/hooks/useCloudSubscription";
+import { useSmoothStreaming } from "@/hooks/useSmoothStreaming";
 
 interface PAT {
   id: number;
@@ -72,12 +79,122 @@ interface PAT {
   created_at: string;
   expires_at: string | null;
   last_used_at: string | null;
+  scopes: string[] | null;
 }
+
+interface PatScopeOption {
+  scope: string;
+  group_label: string;
+  label: string;
+  description: string;
+  implies: string[];
+}
+
+type AccessMode = "full" | "limited";
 
 interface CreatedTokenState {
   id: number;
   token: string;
   name: string;
+}
+
+interface ScopeGroup {
+  label: string;
+  rows: PatScopeOption[];
+}
+
+interface ScopeSelectorProps {
+  scopeOptions: PatScopeOption[];
+  selectedScopes: string[];
+  toggleScope: (scope: string) => void;
+  scopesError: boolean;
+  disabled: boolean;
+}
+
+// Data-driven from the /scopes payload, so new scopes need no change here.
+function ScopeSelector({
+  scopeOptions,
+  selectedScopes,
+  toggleScope,
+  scopesError,
+  disabled,
+}: ScopeSelectorProps) {
+  const groups = useMemo(() => {
+    const byLabel = new Map<string, ScopeGroup>();
+    for (const option of scopeOptions) {
+      const group = byLabel.get(option.group_label);
+      if (group) {
+        group.rows.push(option);
+      } else {
+        byLabel.set(option.group_label, {
+          label: option.group_label,
+          rows: [option],
+        });
+      }
+    }
+    return Array.from(byLabel.values());
+  }, [scopeOptions]);
+
+  if (scopesError) {
+    return (
+      <Text font="secondary-body" color="text-03">
+        Couldn&apos;t load permissions.
+      </Text>
+    );
+  }
+  if (scopeOptions.length === 0) {
+    return (
+      <Text font="secondary-body" color="text-03">
+        Loading permissions...
+      </Text>
+    );
+  }
+
+  // scope -> label of a selected scope that implies it (so it's auto-included).
+  const lockedBy = new Map<string, string>();
+  for (const scope of selectedScopes) {
+    const option = scopeOptions.find((o) => o.scope === scope);
+    option?.implies.forEach((implied) => lockedBy.set(implied, option.label));
+  }
+
+  return (
+    <div className="grid grid-cols-2 items-start">
+      {groups.map((group) => (
+        <div key={group.label} className="flex flex-col items-start gap-1">
+          <Text font="main-ui-action" color="text-04">
+            {group.label}
+          </Text>
+          {group.rows.map((option) => {
+            const lockReason = lockedBy.get(option.scope);
+            const locked = lockReason !== undefined;
+            return (
+              <div key={option.scope} className="flex items-start gap-2 pl-2">
+                <Checkbox
+                  checked={selectedScopes.includes(option.scope) || locked}
+                  disabled={disabled || locked}
+                  onCheckedChange={() => toggleScope(option.scope)}
+                  aria-label={`${group.label} ${option.label}`}
+                />
+                <div className="flex flex-col">
+                  <Text font="main-ui-body" color="text-04">
+                    {locked
+                      ? `${option.label} (included with ${lockReason})`
+                      : option.label}
+                  </Text>
+                  {/* Fixed 2-line slot so every row is the same height. */}
+                  <div className="h-8 overflow-hidden">
+                    <Text font="secondary-body" color="text-03" maxLines={2}>
+                      {option.description}
+                    </Text>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 interface PATModalProps {
@@ -86,6 +203,12 @@ interface PATModalProps {
   setNewTokenName: (name: string) => void;
   expirationDays: string;
   setExpirationDays: (days: string) => void;
+  accessMode: AccessMode;
+  setAccessMode: (mode: AccessMode) => void;
+  scopeOptions: PatScopeOption[];
+  scopesError: boolean;
+  selectedScopes: string[];
+  toggleScope: (scope: string) => void;
   onClose: () => void;
   onCreate: () => void;
   createdToken: CreatedTokenState | null;
@@ -97,10 +220,46 @@ function PATModal({
   setNewTokenName,
   expirationDays,
   setExpirationDays,
+  accessMode,
+  setAccessMode,
+  scopeOptions,
+  scopesError,
+  selectedScopes,
+  toggleScope,
   onClose,
   onCreate,
   createdToken,
 }: PATModalProps) {
+  if (createdToken?.token) {
+    return (
+      <Modal open onOpenChange={(open) => !open && onClose()}>
+        <Modal.Content width="sm" height="sm">
+          <Modal.Header
+            title="Access Token"
+            icon={SvgKey}
+            onClose={onClose}
+            description="Save this token before continuing. It won't be shown again."
+          />
+          <Modal.Body>
+            <Code showCopyButton={false}>{createdToken.token}</Code>
+          </Modal.Body>
+          <Modal.Footer>
+            <BasicModalFooter
+              submit={
+                <CopyButton
+                  getCopyText={() => createdToken.token}
+                  prominence="primary"
+                >
+                  Copy Token
+                </CopyButton>
+              }
+            />
+          </Modal.Footer>
+        </Modal.Content>
+      </Modal>
+    );
+  }
+
   return (
     <ConfirmationModalLayout
       icon={SvgKey}
@@ -108,70 +267,92 @@ function PATModal({
       description="All API requests using this token will inherit your access permissions and be attributed to you as an individual."
       onClose={onClose}
       submit={
-        !!createdToken?.token ? (
-          <Button onClick={onClose}>Done</Button>
-        ) : (
-          <Disabled disabled={isCreating || !newTokenName.trim()}>
-            <Button onClick={onCreate}>
-              {isCreating ? "Creating Token..." : "Create Token"}
-            </Button>
-          </Disabled>
-        )
+        <Button
+          disabled={
+            isCreating ||
+            !newTokenName.trim() ||
+            (accessMode === "limited" && selectedScopes.length === 0)
+          }
+          onClick={onCreate}
+        >
+          {isCreating ? "Creating Token..." : "Create Token"}
+        </Button>
       }
-      hideCancel={!!createdToken}
     >
       <Section gap={1}>
-        {/* Token Creation*/}
-        {!!createdToken?.token ? (
-          <InputLayouts.Vertical title="Token Value">
-            <Code>{createdToken.token}</Code>
-          </InputLayouts.Vertical>
-        ) : (
-          <>
-            <InputLayouts.Vertical title="Token Name">
-              <InputTypeIn
-                placeholder="Name your token"
-                value={newTokenName}
-                onChange={(e) => setNewTokenName(e.target.value)}
-                variant={isCreating ? "disabled" : undefined}
-                autoComplete="new-password"
-              />
-            </InputLayouts.Vertical>
-            <InputLayouts.Vertical
-              title="Expires in"
-              subDescription={
-                expirationDays === "null"
-                  ? undefined
-                  : (() => {
-                      const expiryDate = new Date();
-                      expiryDate.setUTCDate(
-                        expiryDate.getUTCDate() + parseInt(expirationDays)
-                      );
-                      expiryDate.setUTCHours(23, 59, 59, 999);
-                      return `This token will expire at: ${expiryDate
-                        .toISOString()
-                        .replace("T", " ")
-                        .replace(".999Z", " UTC")}`;
-                    })()
-              }
-            >
-              <InputSelect
-                value={expirationDays}
-                onValueChange={setExpirationDays}
-                disabled={isCreating}
-              >
-                <InputSelect.Trigger placeholder="Select expiration" />
-                <InputSelect.Content>
-                  <InputSelect.Item value="7">7 days</InputSelect.Item>
-                  <InputSelect.Item value="30">30 days</InputSelect.Item>
-                  <InputSelect.Item value="365">365 days</InputSelect.Item>
-                  <InputSelect.Item value="null">
-                    No expiration
-                  </InputSelect.Item>
-                </InputSelect.Content>
-              </InputSelect>
-            </InputLayouts.Vertical>
-          </>
+        <InputVertical title="Token Name" withLabel>
+          <InputTypeIn
+            placeholder="Name your token"
+            value={newTokenName}
+            onChange={(e) => setNewTokenName(e.target.value)}
+            variant={isCreating ? "disabled" : undefined}
+            autoComplete="new-password"
+          />
+        </InputVertical>
+        <InputVertical
+          title="Expires in"
+          subDescription={
+            expirationDays === "null"
+              ? undefined
+              : (() => {
+                  const expiryDate = new Date();
+                  expiryDate.setUTCDate(
+                    expiryDate.getUTCDate() + parseInt(expirationDays)
+                  );
+                  expiryDate.setUTCHours(23, 59, 59, 999);
+                  return `This token will expire at: ${expiryDate
+                    .toISOString()
+                    .replace("T", " ")
+                    .replace(".999Z", " UTC")}`;
+                })()
+          }
+          withLabel
+        >
+          <InputSelect
+            value={expirationDays}
+            onValueChange={setExpirationDays}
+            disabled={isCreating}
+          >
+            <InputSelect.Trigger placeholder="Select expiration" />
+            <InputSelect.Content>
+              <InputSelect.Item value="7">7 days</InputSelect.Item>
+              <InputSelect.Item value="30">30 days</InputSelect.Item>
+              <InputSelect.Item value="365">365 days</InputSelect.Item>
+              <InputSelect.Item value="null">No expiration</InputSelect.Item>
+            </InputSelect.Content>
+          </InputSelect>
+        </InputVertical>
+        <InputVertical
+          title="Permissions"
+          subDescription={
+            accessMode === "full"
+              ? "Inherits all of your permissions."
+              : "Limit this token to specific capabilities."
+          }
+          withLabel
+        >
+          <InputSelect
+            value={accessMode}
+            onValueChange={(value) => setAccessMode(value as AccessMode)}
+            disabled={isCreating}
+          >
+            <InputSelect.Trigger placeholder="Select permissions" />
+            <InputSelect.Content>
+              <InputSelect.Item value="full">Full access</InputSelect.Item>
+              <InputSelect.Item value="limited">
+                Limited access
+              </InputSelect.Item>
+            </InputSelect.Content>
+          </InputSelect>
+        </InputVertical>
+        {accessMode === "limited" && (
+          <ScopeSelector
+            scopeOptions={scopeOptions}
+            selectedScopes={selectedScopes}
+            toggleScope={toggleScope}
+            scopesError={scopesError}
+            disabled={isCreating}
+          />
         )}
       </Section>
     </ConfirmationModalLayout>
@@ -186,6 +367,24 @@ function GeneralSettings() {
     updateUserChatBackground,
   } = useUser();
   const { theme, setTheme, systemTheme } = useTheme();
+
+  const applyBackground = useCallback(
+    async (bg: (typeof CHAT_BACKGROUND_OPTIONS)[number]) => {
+      try {
+        await updateUserChatBackground(
+          bg.id === CHAT_BACKGROUND_NONE ? null : bg.id
+        );
+        if (bg.theme) {
+          setTheme(bg.theme);
+          await updateUserThemePreference(bg.theme);
+        }
+      } catch {
+        // errors are already logged and state is rolled back via refreshUser
+        // inside the update functions
+      }
+    },
+    [updateUserChatBackground, setTheme, updateUserThemePreference]
+  );
   const { refreshChatSessions } = useChatSessions();
   const router = useRouter();
   const pathname = usePathname();
@@ -237,24 +436,25 @@ function GeneralSettings() {
           title="Delete All Chats"
           onClose={() => setShowDeleteConfirmation(false)}
           submit={
-            <Disabled disabled={isDeleting}>
-              <Button
-                variant="danger"
-                onClick={() => {
-                  void handleDeleteAllChats();
-                }}
-              >
-                {isDeleting ? "Deleting..." : "Delete"}
-              </Button>
-            </Disabled>
+            <Button
+              disabled={isDeleting}
+              variant="danger"
+              onClick={() => {
+                void handleDeleteAllChats();
+              }}
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
+            </Button>
           }
         >
           <Section gap={0.5} alignItems="start">
-            <Text>
+            <Text color="text-05">
               All your chat sessions and history will be permanently deleted.
               Deletion cannot be undone.
             </Text>
-            <Text>Are you sure you want to delete all chats?</Text>
+            <Text color="text-05">
+              Are you sure you want to delete all chats?
+            </Text>
           </Section>
         </ConfirmationModalLayout>
       )}
@@ -265,13 +465,14 @@ function GeneralSettings() {
             title="Profile"
             sizePreset="main-content"
             variant="section"
-            widthVariant="full"
+            width="full"
           />
           <Card>
-            <InputLayouts.Horizontal
+            <InputHorizontal
               title="Full Name"
               description="We'll display this name in the app."
               center
+              withLabel
             >
               <InputTypeIn
                 placeholder="Your name"
@@ -292,11 +493,12 @@ function GeneralSettings() {
                   }
                 }}
               />
-            </InputLayouts.Horizontal>
-            <InputLayouts.Horizontal
+            </InputHorizontal>
+            <InputHorizontal
               title="Work Role"
               description="Share your role to better tailor responses."
               center
+              withLabel
             >
               <InputTypeIn
                 placeholder="Your role"
@@ -317,7 +519,7 @@ function GeneralSettings() {
                   }
                 }}
               />
-            </InputLayouts.Horizontal>
+            </InputHorizontal>
           </Card>
         </Section>
 
@@ -326,13 +528,14 @@ function GeneralSettings() {
             title="Appearance"
             sizePreset="main-content"
             variant="section"
-            widthVariant="full"
+            width="full"
           />
           <Card>
-            <InputLayouts.Horizontal
+            <InputHorizontal
               title="Color Mode"
               description="Select your preferred color mode for the UI."
               center
+              withLabel
             >
               <InputSelect
                 value={theme}
@@ -375,8 +578,8 @@ function GeneralSettings() {
                   </InputSelect.Item>
                 </InputSelect.Content>
               </InputSelect>
-            </InputLayouts.Horizontal>
-            <InputLayouts.Vertical title="Chat Background">
+            </InputHorizontal>
+            <InputVertical title="Chat Background">
               <div className="flex flex-wrap gap-2">
                 {CHAT_BACKGROUND_OPTIONS.map((bg) => {
                   const currentBackgroundId =
@@ -387,11 +590,7 @@ function GeneralSettings() {
                   return (
                     <button
                       key={bg.id}
-                      onClick={() =>
-                        updateUserChatBackground(
-                          bg.id === CHAT_BACKGROUND_NONE ? null : bg.id
-                        )
-                      }
+                      onClick={() => applyBackground(bg)}
                       className="relative overflow-hidden rounded-lg transition-all w-[90px] h-[68px] cursor-pointer border-none p-0 bg-transparent group"
                       title={bg.label}
                       aria-label={`${bg.label} background${
@@ -425,21 +624,21 @@ function GeneralSettings() {
                   );
                 })}
               </div>
-            </InputLayouts.Vertical>
+            </InputVertical>
           </Card>
         </Section>
 
-        <Separator noPadding />
+        <Divider paddingParallel="fit" paddingPerpendicular="fit" />
 
         <Section gap={0.75}>
           <Content
             title="Danger Zone"
             sizePreset="main-content"
             variant="section"
-            widthVariant="full"
+            width="full"
           />
           <Card>
-            <InputLayouts.Horizontal
+            <InputHorizontal
               title="Delete All Chats"
               description="Permanently delete all your chat sessions."
               center
@@ -453,7 +652,7 @@ function GeneralSettings() {
               >
                 Delete All Chats
               </Button>
-            </InputLayouts.Horizontal>
+            </InputHorizontal>
           </Card>
         </Section>
       </Section>
@@ -699,21 +898,18 @@ function PromptShortcuts() {
                   }
                 />
                 <Section>
-                  <Disabled
+                  <Button
                     disabled={(shortcut.isNew && isEmpty) || shortcut.is_public}
-                  >
-                    <Button
-                      icon={SvgMinusCircle}
-                      onClick={() => void handleRemoveShortcut(index)}
-                      prominence="tertiary"
-                      aria-label="Remove shortcut"
-                      tooltip={
-                        shortcut.is_public
-                          ? "Cannot delete public prompt-shortcuts."
-                          : undefined
-                      }
-                    />
-                  </Disabled>
+                    icon={SvgMinusCircle}
+                    onClick={() => void handleRemoveShortcut(index)}
+                    prominence="tertiary"
+                    aria-label="Remove shortcut"
+                    tooltip={
+                      shortcut.is_public
+                        ? "Cannot delete public prompt-shortcuts."
+                        : undefined
+                    }
+                  />
                 </Section>
                 <InputTextArea
                   placeholder="Provide a concise 1–2 sentence summary of the following:"
@@ -751,14 +947,19 @@ function ChatPreferencesSettings() {
     updateUserPersonalization,
     updateUserAutoScroll,
     updateUserShortcuts,
+    updateUserPasteAsTile,
     updateUserDefaultModel,
     updateUserDefaultAppMode,
     updateUserVoiceSettings,
   } = useUser();
-  const isPaidEnterpriseFeaturesEnabled = usePaidEnterpriseFeaturesEnabled();
+  const businessTier = useTierAtLeast(Tier.BUSINESS);
   const settings = useSettingsContext();
   const { isSearchModeAvailable: searchUiEnabled } = settings;
   const llmManager = useLlmManager();
+  const {
+    enabled: smoothStreamingEnabled,
+    setEnabled: setSmoothStreamingEnabled,
+  } = useSmoothStreaming();
 
   const {
     personalizationValues,
@@ -827,12 +1028,13 @@ function ChatPreferencesSettings() {
           title="Chats"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
+          width="full"
         />
         <Card>
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Default Model"
             description="This model will be used by Onyx by default in your chats."
+            withLabel
           >
             <LLMPopover
               llmManager={llmManager}
@@ -840,11 +1042,12 @@ function ChatPreferencesSettings() {
                 void updateUserDefaultModel(selected);
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Chat Auto-scroll"
             description="Automatically scroll to new content as chat generates response."
+            withLabel
           >
             <Switch
               checked={user?.preferences.auto_scroll}
@@ -852,10 +1055,34 @@ function ChatPreferencesSettings() {
                 updateUserAutoScroll(checked);
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
-          {isPaidEnterpriseFeaturesEnabled && (
-            <SimpleTooltip
+          <InputHorizontal
+            title="Smooth Streaming"
+            description="Animate streamed responses character-by-character. Disable to render chunks as they arrive."
+            withLabel
+          >
+            <Switch
+              checked={smoothStreamingEnabled}
+              onCheckedChange={setSmoothStreamingEnabled}
+            />
+          </InputHorizontal>
+
+          <InputHorizontal
+            title="Collapse Large Pastes"
+            description="When pasting text longer than 3 lines or 200 characters, collapse it into a compact tile instead of inserting it inline. Click the tile to view or edit the full text."
+            withLabel
+          >
+            <Switch
+              checked={user?.preferences?.paste_as_tile ?? false}
+              onCheckedChange={(checked) => {
+                updateUserPasteAsTile(checked);
+              }}
+            />
+          </InputHorizontal>
+
+          {businessTier && (
+            <Tooltip
               tooltip={
                 searchUiEnabled
                   ? undefined
@@ -863,11 +1090,12 @@ function ChatPreferencesSettings() {
               }
               side="top"
             >
-              <InputLayouts.Horizontal
+              <InputHorizontal
                 title="Default App Mode"
                 description="Choose whether new sessions start in Search or Chat mode."
                 center
                 disabled={!searchUiEnabled}
+                withLabel
               >
                 <InputSelect
                   value={user?.preferences.default_app_mode ?? "CHAT"}
@@ -882,16 +1110,17 @@ function ChatPreferencesSettings() {
                     <InputSelect.Item value="SEARCH">Search</InputSelect.Item>
                   </InputSelect.Content>
                 </InputSelect>
-              </InputLayouts.Horizontal>
-            </SimpleTooltip>
+              </InputHorizontal>
+            </Tooltip>
           )}
         </Card>
       </Section>
 
       <Section gap={0.75}>
-        <InputLayouts.Vertical
+        <InputVertical
           title="Personal Preferences"
           description="Provide your custom preferences in natural language."
+          withLabel
         >
           <InputTextArea
             placeholder="Describe how you want the system to behave and the tone it should use."
@@ -907,17 +1136,18 @@ function ChatPreferencesSettings() {
             value={personalizationValues.user_preferences || ""}
             limit={500}
           />
-        </InputLayouts.Vertical>
+        </InputVertical>
         <Content
           title="Memory"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
+          width="full"
         />
         <Card>
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Reference Stored Memories"
             description="Let Onyx reference stored memories in chats."
+            withLabel
           >
             <Switch
               checked={personalizationValues.use_memories}
@@ -926,10 +1156,11 @@ function ChatPreferencesSettings() {
                 void handleSavePersonalization({ use_memories: checked });
               }}
             />
-          </InputLayouts.Horizontal>
-          <InputLayouts.Horizontal
+          </InputHorizontal>
+          <InputHorizontal
             title="Update Memories"
             description="Let Onyx generate and update stored memories."
+            withLabel
           >
             <Switch
               checked={personalizationValues.enable_memory_tool}
@@ -940,7 +1171,7 @@ function ChatPreferencesSettings() {
                 });
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
           {(personalizationValues.use_memories ||
             personalizationValues.enable_memory_tool ||
@@ -958,12 +1189,13 @@ function ChatPreferencesSettings() {
           title="Prompt Shortcuts"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
+          width="full"
         />
         <Card>
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Use Prompt Shortcuts"
             description="Enable shortcuts to quickly insert common prompts."
+            withLabel
           >
             <Switch
               checked={user?.preferences?.shortcut_enabled}
@@ -971,7 +1203,7 @@ function ChatPreferencesSettings() {
                 updateUserShortcuts(checked);
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
           {user?.preferences?.shortcut_enabled && <PromptShortcuts />}
         </Card>
@@ -982,12 +1214,13 @@ function ChatPreferencesSettings() {
           title="Voice"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
+          width="full"
         />
         <Card>
-          <InputLayouts.Horizontal
-            title="Auto-Send"
-            description="Automatically send voice input when recording stops."
+          <InputHorizontal
+            title="Auto-Send on Pause"
+            description="Automatically send voice input when you stop speaking."
+            withLabel
           >
             <Switch
               checked={user?.preferences.voice_auto_send ?? false}
@@ -995,11 +1228,12 @@ function ChatPreferencesSettings() {
                 void saveVoiceSettings({ auto_send: checked });
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Auto-Playback"
             description="Automatically play voice responses."
+            withLabel
           >
             <Switch
               checked={user?.preferences.voice_auto_playback ?? false}
@@ -1007,11 +1241,12 @@ function ChatPreferencesSettings() {
                 void saveVoiceSettings({ auto_playback: checked });
               }}
             />
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
 
-          <InputLayouts.Horizontal
+          <InputHorizontal
             title="Playback Speed"
             description="Adjust the speed of voice playback."
+            withLabel
           >
             <div className="flex items-center gap-3">
               <input
@@ -1036,7 +1271,7 @@ function ChatPreferencesSettings() {
                 {draftVoicePlaybackSpeed.toFixed(1)}x
               </span>
             </div>
-          </InputLayouts.Horizontal>
+          </InputHorizontal>
         </Card>
       </Section>
     </Section>
@@ -1066,6 +1301,8 @@ function AccountsAccessSettings() {
   const [isCreating, setIsCreating] = useState(false);
   const [newTokenName, setNewTokenName] = useState("");
   const [expirationDays, setExpirationDays] = useState<string>("30");
+  const [accessMode, setAccessMode] = useState<AccessMode>("full");
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [newlyCreatedToken, setNewlyCreatedToken] =
     useState<CreatedTokenState | null>(null);
   const [tokenToDelete, setTokenToDelete] = useState<PAT | null>(null);
@@ -1082,7 +1319,7 @@ function AccountsAccessSettings() {
     error,
     isLoading,
   } = useSWR<PAT[]>(
-    showTokensSection ? "/api/user/pats" : null,
+    showTokensSection ? SWR_KEYS.userPats : null,
     errorHandlingFetcher,
     {
       revalidateOnFocus: true,
@@ -1090,6 +1327,31 @@ function AccountsAccessSettings() {
       fallbackData: [],
     }
   );
+
+  const { data: scopeOptions = [], error: scopeOptionsError } = useSWR<
+    PatScopeOption[]
+  >(
+    showTokensSection && canCreateTokens ? SWR_KEYS.userPatScopes : null,
+    errorHandlingFetcher,
+    { fallbackData: [] }
+  );
+
+  const scopeLabels = useMemo(
+    () =>
+      new Map(
+        scopeOptions.map((o) => [
+          o.scope,
+          `${o.label} ${o.group_label.toLowerCase()}`,
+        ])
+      ),
+    [scopeOptions]
+  );
+
+  const toggleScope = useCallback((scope: string) => {
+    setSelectedScopes((prev) =>
+      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope]
+    );
+  }, []);
 
   // Use filter hook for searching tokens
   const {
@@ -1104,6 +1366,12 @@ function AccountsAccessSettings() {
       toast.error("Failed to load tokens");
     }
   }, [error]);
+
+  useEffect(() => {
+    if (scopeOptionsError) {
+      toast.error("Failed to load permission options");
+    }
+  }, [scopeOptionsError]);
 
   const createPAT = useCallback(async () => {
     if (!newTokenName.trim()) {
@@ -1120,6 +1388,7 @@ function AccountsAccessSettings() {
           name: newTokenName,
           expiration_days:
             expirationDays === "null" ? null : parseInt(expirationDays),
+          scopes: accessMode === "limited" ? selectedScopes : null,
         }),
       });
 
@@ -1143,7 +1412,7 @@ function AccountsAccessSettings() {
     } finally {
       setIsCreating(false);
     }
-  }, [newTokenName, expirationDays, mutate]);
+  }, [newTokenName, expirationDays, accessMode, selectedScopes, mutate]);
 
   const deletePAT = useCallback(
     async (patId: number) => {
@@ -1211,10 +1480,18 @@ function AccountsAccessSettings() {
           setNewTokenName={setNewTokenName}
           expirationDays={expirationDays}
           setExpirationDays={setExpirationDays}
+          accessMode={accessMode}
+          setAccessMode={setAccessMode}
+          scopeOptions={scopeOptions}
+          scopesError={Boolean(scopeOptionsError)}
+          selectedScopes={selectedScopes}
+          toggleScope={toggleScope}
           onClose={() => {
             setShowCreateModal(false);
             setNewTokenName("");
             setExpirationDays("30");
+            setAccessMode("full");
+            setSelectedScopes([]);
             setNewlyCreatedToken(null);
           }}
           onCreate={createPAT}
@@ -1237,13 +1514,12 @@ function AccountsAccessSettings() {
           }
         >
           <Section gap={0.5} alignItems="start">
-            <Text>
-              Any application using the token{" "}
-              <Text className="!font-bold">{tokenToDelete.name}</Text>{" "}
-              <Text secondaryMono>({tokenToDelete.token_display})</Text> will
-              lose access to Onyx. This action cannot be undone.
+            <Text color="text-05">
+              {`Any application using the token ${tokenToDelete.name} (${tokenToDelete.token_display}) will lose access to Onyx. This action cannot be undone.`}
             </Text>
-            <Text>Are you sure you want to revoke this token?</Text>
+            <Text color="text-05">
+              Are you sure you want to revoke this token?
+            </Text>
           </Section>
         </ConfirmationModalLayout>
       )}
@@ -1276,20 +1552,19 @@ function AccountsAccessSettings() {
                 icon={SvgLock}
                 title="Change Password"
                 submit={
-                  <Disabled disabled={isSubmitting || !dirty || !isValid}>
-                    <Button
-                      onClick={async () => {
-                        setSubmitting(true);
-                        try {
-                          await handleChangePassword(values);
-                        } finally {
-                          setSubmitting(false);
-                        }
-                      }}
-                    >
-                      {isSubmitting ? "Updating..." : "Update"}
-                    </Button>
-                  </Disabled>
+                  <Button
+                    disabled={isSubmitting || !dirty || !isValid}
+                    onClick={async () => {
+                      setSubmitting(true);
+                      try {
+                        await handleChangePassword(values);
+                      } finally {
+                        setSubmitting(false);
+                      }
+                    }}
+                  >
+                    {isSubmitting ? "Updating..." : "Update"}
+                  </Button>
                 }
                 onClose={() => {
                   setShowPasswordModal(false);
@@ -1297,8 +1572,8 @@ function AccountsAccessSettings() {
               >
                 <Section gap={1}>
                   <Section gap={0.25} alignItems="start">
-                    <InputLayouts.Vertical
-                      name="currentPassword"
+                    <InputVertical
+                      withLabel="currentPassword"
                       title="Current Password"
                     >
                       <PasswordInputTypeIn
@@ -1310,13 +1585,10 @@ function AccountsAccessSettings() {
                           touched.currentPassword && !!errors.currentPassword
                         }
                       />
-                    </InputLayouts.Vertical>
+                    </InputVertical>
                   </Section>
                   <Section gap={0.25} alignItems="start">
-                    <InputLayouts.Vertical
-                      name="newPassword"
-                      title="New Password"
-                    >
+                    <InputVertical withLabel="newPassword" title="New Password">
                       <PasswordInputTypeIn
                         name="newPassword"
                         value={values.newPassword}
@@ -1324,11 +1596,11 @@ function AccountsAccessSettings() {
                         onBlur={handleBlur}
                         error={touched.newPassword && !!errors.newPassword}
                       />
-                    </InputLayouts.Vertical>
+                    </InputVertical>
                   </Section>
                   <Section gap={0.25} alignItems="start">
-                    <InputLayouts.Vertical
-                      name="confirmPassword"
+                    <InputVertical
+                      withLabel="confirmPassword"
                       title="Confirm New Password"
                     >
                       <PasswordInputTypeIn
@@ -1340,7 +1612,7 @@ function AccountsAccessSettings() {
                           touched.confirmPassword && !!errors.confirmPassword
                         }
                       />
-                    </InputLayouts.Vertical>
+                    </InputVertical>
                   </Section>
                 </Section>
               </ConfirmationModalLayout>
@@ -1355,20 +1627,19 @@ function AccountsAccessSettings() {
             title="Accounts"
             sizePreset="main-content"
             variant="section"
-            widthVariant="full"
+            width="full"
           />
           <Card>
-            <InputLayouts.Horizontal
+            <InputHorizontal
               title="Email"
               description="Your account email address."
               center
-              nonInteractive
             >
-              <Text>{user?.email ?? "anonymous"}</Text>
-            </InputLayouts.Horizontal>
+              <Text color="text-05">{user?.email ?? "anonymous"}</Text>
+            </InputHorizontal>
 
             {showPasswordSection && (
-              <InputLayouts.Horizontal
+              <InputHorizontal
                 title="Password"
                 description="Update your account password."
                 center
@@ -1381,7 +1652,7 @@ function AccountsAccessSettings() {
                 >
                   Change Password
                 </Button>
-              </InputLayouts.Horizontal>
+              </InputHorizontal>
             )}
           </Card>
         </Section>
@@ -1392,7 +1663,7 @@ function AccountsAccessSettings() {
               title="Access Tokens"
               sizePreset="main-content"
               variant="section"
-              widthVariant="full"
+              width="full"
             />
             {canCreateTokens ? (
               <Card padding={0.25}>
@@ -1400,7 +1671,7 @@ function AccountsAccessSettings() {
                   <Section flexDirection="row" padding={0.25} gap={0.5}>
                     {pats.length === 0 ? (
                       <Section padding={0.5} alignItems="start">
-                        <Text text03 secondaryBody>
+                        <Text font="secondary-body" color="text-03">
                           {isLoading
                             ? "Loading tokens..."
                             : "No access tokens created."}
@@ -1411,19 +1682,20 @@ function AccountsAccessSettings() {
                         placeholder="Search..."
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        leftSearchIcon
+                        searchIcon
                         variant="internal"
                       />
                     )}
-                    <CreateButton
-                      onClick={() => setShowCreateModal(true)}
-                      secondary={false}
-                      internal
-                      transient={showCreateModal}
-                      rightIcon
-                    >
-                      New Access Token
-                    </CreateButton>
+                    <div className="shrink-0">
+                      <Button
+                        rightIcon={SvgPlusCircle}
+                        prominence="internal"
+                        interaction={showCreateModal ? "active" : "rest"}
+                        onClick={() => setShowCreateModal(true)}
+                      >
+                        New Access Token
+                      </Button>
+                    </div>
                   </Section>
 
                   <Section gap={0.25}>
@@ -1447,15 +1719,27 @@ function AccountsAccessSettings() {
                         }`;
                       }
 
-                      const middleText = `Created ${daysSinceCreation} day${
-                        daysSinceCreation === 1 ? "" : "s"
-                      } ago - ${expiryText}`;
+                      const scopeText =
+                        pat.scopes === null
+                          ? "Full access"
+                          : pat.scopes
+                              .map((scope) => scopeLabels.get(scope) ?? scope)
+                              .join(", ");
+
+                      const createdText =
+                        daysSinceCreation === 0
+                          ? "Created today"
+                          : `Created ${daysSinceCreation} day${
+                              daysSinceCreation === 1 ? "" : "s"
+                            } ago`;
+
+                      const middleText = `${createdText} - ${expiryText} - ${scopeText}`;
 
                       return (
                         <Interactive.Container
                           key={pat.id}
-                          heightVariant="fit"
-                          widthVariant="full"
+                          size="fit"
+                          width="full"
                         >
                           <div className="w-full bg-background-tint-01">
                             <AttachmentItemLayout
@@ -1483,7 +1767,7 @@ function AccountsAccessSettings() {
             ) : (
               <Card>
                 <Section flexDirection="row" justifyContent="between">
-                  <Text text03 secondaryBody>
+                  <Text font="secondary-body" color="text-03">
                     Access tokens require an active paid subscription.
                   </Text>
                   <Button prominence="secondary" href="/admin/billing">
@@ -1561,25 +1845,24 @@ function FederatedConnectorCard({
       {showDisconnectConfirmation && (
         <ConfirmationModalLayout
           icon={SvgUnplug}
-          title={`Disconnect ${sourceMetadata.displayName}`}
+          title={markdown(`Disconnect *${sourceMetadata.displayName}*`)}
           onClose={() => setShowDisconnectConfirmation(false)}
           submit={
-            <Disabled disabled={isDisconnecting}>
-              <Button variant="danger" onClick={() => void handleDisconnect()}>
-                {isDisconnecting ? "Disconnecting..." : "Disconnect"}
-              </Button>
-            </Disabled>
+            <Button
+              disabled={isDisconnecting}
+              variant="danger"
+              onClick={() => void handleDisconnect()}
+            >
+              {isDisconnecting ? "Disconnecting..." : "Disconnect"}
+            </Button>
           }
         >
           <Section gap={0.5} alignItems="start">
-            <Text>
-              Onyx will no longer be able to access or search content from your{" "}
-              <Text className="!font-bold">{sourceMetadata.displayName}</Text>{" "}
-              account.
+            <Text color="text-05">
+              {`Onyx will no longer be able to access or search content from your ${sourceMetadata.displayName} account.`}
             </Text>
-            <Text>
-              You can still continue existing sessions referencing{" "}
-              {sourceMetadata.displayName} content.
+            <Text color="text-05">
+              {`You can still continue existing sessions referencing ${sourceMetadata.displayName} content.`}
             </Text>
           </Section>
         </ConfirmationModalLayout>
@@ -1594,17 +1877,16 @@ function FederatedConnectorCard({
           }
           sizePreset="main-content"
           variant="section"
-          paddingVariant="sm"
+          padding="sm"
           rightChildren={
             connector.has_oauth_token ? (
-              <Disabled disabled={isDisconnecting}>
-                <Button
-                  icon={SvgUnplug}
-                  prominence="tertiary"
-                  size="sm"
-                  onClick={() => setShowDisconnectConfirmation(true)}
-                />
-              </Disabled>
+              <Button
+                disabled={isDisconnecting}
+                icon={SvgUnplug}
+                prominence="tertiary"
+                size="sm"
+                onClick={() => setShowDisconnectConfirmation(true)}
+              />
             ) : connector.authorize_url ? (
               <Button
                 prominence="internal"
@@ -1921,7 +2203,7 @@ function ConnectorsSettings() {
           title="Connectors"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
+          width="full"
         />
         {hasConnectors ? (
           <>
@@ -1944,7 +2226,10 @@ function ConnectorsSettings() {
             ))}
           </>
         ) : (
-          <EmptyMessage title="No connectors set up for your organization." />
+          <EmptyMessageCard
+            sizePreset="main-ui"
+            title="No connectors set up for your organization."
+          />
         )}
       </Section>
     </Section>

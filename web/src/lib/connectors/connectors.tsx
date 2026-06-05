@@ -243,6 +243,15 @@ export const connectorConfigs: Record<
         description: "Index issues from repositories",
         optional: true,
       },
+      {
+        type: "checkbox",
+        query: "Include documents?",
+        label: "Include Documents?",
+        name: "include_files",
+        description:
+          "Index text-based documents (markdown, text, etc.) from the default branch of repositories",
+        optional: true,
+      },
     ],
     advanced_values: [],
   },
@@ -840,6 +849,40 @@ export const connectorConfigs: Record<
           "Index aspx-pages of all SharePoint sites defined above, even if a library or folder is specified.",
       },
       {
+        type: "checkbox",
+        label: "Treat sharing links as public?",
+        description:
+          "When enabled, documents with a sharing link (anonymous or organization-wide) " +
+          "are treated as public (visible to all Onyx users). " +
+          "When disabled, only users and groups with explicit role assignments can see the document.",
+        name: "treat_sharing_link_as_public",
+        optional: true,
+        default: false,
+      },
+      {
+        type: "list",
+        query: "Enter site URLs to exclude:",
+        label: "Excluded Sites",
+        name: "excluded_sites",
+        optional: true,
+        description:
+          "Site URLs or glob patterns to exclude from indexing. " +
+          "Matched sites will never be indexed, even if they appear in the sites list above. " +
+          "Examples: 'https://contoso.sharepoint.com/sites/archive' (exact), " +
+          "'*://*/sites/archive-*' (glob pattern).",
+      },
+      {
+        type: "list",
+        query: "Enter file path patterns to exclude:",
+        label: "Excluded Paths",
+        name: "excluded_paths",
+        optional: true,
+        description:
+          "Glob patterns for file paths to exclude from indexing within document libraries. " +
+          "Patterns are matched against both the full relative path and the filename. " +
+          "Examples: '*.tmp' (temp files), '~$*' (Office lock files), 'Archive/*' (folder).",
+      },
+      {
         type: "text",
         query: "Microsoft Authority Host:",
         label: "Authority Host",
@@ -1321,6 +1364,17 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
         query: "Enter the prefix:",
         label: "Prefix",
         name: "prefix",
+        optional: true,
+      },
+      {
+        type: "text",
+        query: "Enter the AWS region:",
+        label: "AWS Region",
+        name: "region_name",
+        description:
+          "The AWS region of the bucket (e.g. us-east-1). Required for buckets in " +
+          "non-default partitions such as GovCloud (us-gov-west-1); otherwise the " +
+          "default region resolution is used.",
         optional: true,
       },
       {
@@ -1839,8 +1893,6 @@ export function createConnectorValidationSchema(
 
   return object;
 }
-
-export const defaultPruneFreqHours = 720; // 30 days in hours
 export const defaultRefreshFreqMinutes = 30; // 30 minutes
 
 // CONNECTORS
@@ -1889,6 +1941,7 @@ export interface GithubConfig {
   repositories: string; // Comma-separated list of repository names
   include_prs: boolean;
   include_issues: boolean;
+  include_files: boolean;
 }
 
 export interface GitlabConfig {
@@ -1941,6 +1994,7 @@ export interface SalesforceConfig {
 export interface SharepointConfig {
   sites?: string[];
   include_site_pages?: boolean;
+  treat_sharing_link_as_public?: boolean;
   include_site_documents?: boolean;
   authority_host?: string;
   graph_api_host?: string;

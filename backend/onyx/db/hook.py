@@ -17,7 +17,6 @@ from onyx.db.models import HookExecutionLog
 from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
 
-
 # ── Hook CRUD ────────────────────────────────────────────────────────────
 
 
@@ -75,6 +74,7 @@ def create_hook__no_commit(
     fail_strategy: HookFailStrategy,
     timeout_seconds: float,
     is_active: bool = False,
+    is_reachable: bool | None = None,
     creator_id: UUID | None = None,
 ) -> Hook:
     """Create a new hook for the given hook point.
@@ -100,6 +100,7 @@ def create_hook__no_commit(
         fail_strategy=fail_strategy,
         timeout_seconds=timeout_seconds,
         is_active=is_active,
+        is_reachable=is_reachable,
         creator_id=creator_id,
     )
     # Use a savepoint so that a failed insert only rolls back this operation,
@@ -149,7 +150,7 @@ def update_hook__no_commit(
     if not isinstance(endpoint_url, UnsetType):
         hook.endpoint_url = endpoint_url
     if not isinstance(api_key, UnsetType):
-        hook.api_key = api_key  # type: ignore[assignment]  # EncryptedString coerces str → SensitiveValue at the ORM level
+        hook.api_key = api_key  # EncryptedString coerces str → SensitiveValue at the ORM level  # ty: ignore[invalid-assignment]
     if fail_strategy is not None:
         hook.fail_strategy = fail_strategy
     if timeout_seconds is not None:
@@ -225,7 +226,7 @@ def cleanup_old_execution_logs__no_commit(
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         days=max_age_days
     )
-    result: CursorResult = db_session.execute(  # type: ignore[assignment]
+    result: CursorResult = db_session.execute(  # ty: ignore[invalid-assignment]
         delete(HookExecutionLog)
         .where(HookExecutionLog.created_at < cutoff)
         .execution_options(synchronize_session=False)

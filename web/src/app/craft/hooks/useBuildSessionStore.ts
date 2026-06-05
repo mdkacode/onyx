@@ -1,11 +1,6 @@
 "use client";
 
 import { create } from "zustand";
-import { getDemoDataEnabled } from "@/app/craft/v1/constants";
-import {
-  getBuildUserPersona,
-  getBuildLlmSelection,
-} from "@/app/craft/onboarding/constants";
 import { DELETE_SUCCESS_DISPLAY_DURATION_MS } from "@/app/craft/constants";
 
 import {
@@ -24,7 +19,18 @@ import {
   StreamItem,
   ToolCallState,
   TodoListState,
+  type PanelTab,
+  panelTabId,
+  type SubagentState,
+  type SubagentStatus,
+  type SubagentTurn,
 } from "@/app/craft/types/displayTypes";
+
+import {
+  QueuedMessage,
+  MAX_QUEUED_MESSAGES,
+  EMPTY_QUEUED_MESSAGES,
+} from "@/app/app/interfaces";
 
 import {
   createSession as apiCreateSession,
@@ -35,11 +41,18 @@ import {
   deleteSession as apiDeleteSession,
   fetchMessages,
   fetchArtifacts,
+  fetchWebappInfo,
   restoreSession,
 } from "@/app/craft/services/apiServices";
 
 import { genId } from "@/app/craft/utils/streamItemHelpers";
 import { parsePacket } from "@/app/craft/utils/parsePacket";
+import {
+  classifySubagentEvent,
+  toolCallStateFromProgress,
+  subagentNameFromTask,
+  cleanTaskOutput,
+} from "@/app/craft/utils/subagentRouting";
 
 /**
  * Convert loaded messages (with message_metadata) to StreamItem[] format.
@@ -61,6 +74,12 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
 
     const metadata = message.message_metadata;
     if (!metadata || typeof metadata !== "object") continue;
+
+    // The synthetic task-output message duplicates the subagent's final
+    // response; it lives in the subagent panel, never the main transcript.
+    if ((metadata as Record<string, unknown>).source === "task_output") {
+      continue;
+    }
 
     // SAME parsePacket — identical classification for both code paths
     const packet = parsePacket(metadata);
@@ -89,6 +108,11 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
         break;
 
       case "tool_call_progress":
+        // Child (subagent-internal) tool events do NOT belong in the main
+        // transcript — they are reconstructed into session.subagents instead.
+        if (classifySubagentEvent(packet).kind === "child") {
+          break;
+        }
         if (packet.isTodo) {
           // Upsert: update existing todo_list or create new one
           const existingIdx = items.findIndex(
@@ -122,12 +146,19 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
             toolCall: {
               id: packet.toolCallId,
               kind: packet.kind,
+              // toolName/skillName/taskOutput must be carried through here too
+              // (not just the live-stream path) or reloaded sessions lose them:
+              // e.g. a skill card would fall back to "Running skill" and
+              // websearch/webfetch would render as GenericBody.
+              toolName: packet.toolName,
               title: packet.title,
               description: packet.description,
               command: packet.command,
               status: packet.status,
               rawOutput: packet.rawOutput,
               subagentType: packet.subagentType ?? undefined,
+              skillName: packet.skillName ?? undefined,
+              taskOutput: packet.taskOutput ?? undefined,
               isNewFile: packet.isNewFile,
               oldContent: packet.oldContent,
               newContent: packet.newContent,
@@ -143,6 +174,134 @@ function convertMessagesToStreamItems(messages: BuildMessage[]): StreamItem[] {
   }
 
   return items;
+}
+
+/**
+ * Reconstruct the subagents Map from persisted messages.
+ *
+ * Applies the SAME classification as the live SSE path:
+ * - child events  → append toolCalls keyed by the child session id
+ * - parent task   → seed meta (parentToolCallId, subagentType, name) and set
+ *                   status from the task event's terminal status
+ *
+ * Child events may arrive before OR after the parent task event that names
+ * them, so identifying fields are backfilled without clobbering known values.
+ */
+function emptyTurn(prompt = ""): SubagentTurn {
+  return { prompt, toolCalls: [], response: null };
+}
+
+function buildSubagentsFromMessages(
+  messages: BuildMessage[]
+): Map<string, SubagentState> {
+  const subagents = new Map<string, SubagentState>();
+
+  function ensure(subagentSessionId: string): SubagentState {
+    const existing = subagents.get(subagentSessionId);
+    if (existing) return existing;
+    const created: SubagentState = {
+      sessionId: subagentSessionId,
+      parentToolCallId: "",
+      subagentType: null,
+      name: "",
+      status: "running",
+      turns: [emptyTurn()],
+      startedAt: Date.now(),
+      completedAt: null,
+    };
+    subagents.set(subagentSessionId, created);
+    return created;
+  }
+
+  /** Upsert a tool call into the last turn (best-effort for follow-ups). */
+  function appendToolCallToLastTurn(
+    sa: SubagentState,
+    toolCall: ToolCallState
+  ): SubagentTurn[] {
+    const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+    const last = turns[turns.length - 1] ?? emptyTurn();
+    const idx = last.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+    const toolCalls =
+      idx >= 0
+        ? last.toolCalls.map((tc, i) => (i === idx ? toolCall : tc))
+        : [...last.toolCalls, toolCall];
+    turns[turns.length - 1] = { ...last, toolCalls };
+    return turns;
+  }
+
+  for (const message of messages) {
+    if (message.type === "user") continue;
+    const metadata = message.message_metadata;
+    if (!metadata || typeof metadata !== "object") continue;
+
+    const packet = parsePacket(metadata);
+
+    // Best-effort follow-up response reconstruction: a child agent_message
+    // (tagged with _meta.parentSessionId) carries a follow-up turn's response.
+    // Follow-up turns do not persist their prompt, so this is the only signal.
+    if (packet.type === "text_chunk") {
+      const meta = (metadata as Record<string, unknown>)._meta as
+        | Record<string, unknown>
+        | undefined;
+      const childSessionId = meta?.sessionId as string | undefined;
+      const parentSessionId = meta?.parentSessionId as string | undefined;
+      if (childSessionId && parentSessionId && packet.text) {
+        const sa = ensure(childSessionId);
+        const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+        const last = turns[turns.length - 1] ?? emptyTurn();
+        turns[turns.length - 1] = {
+          ...last,
+          response: (last.response ?? "") + packet.text,
+        };
+        subagents.set(childSessionId, { ...sa, turns });
+      }
+      continue;
+    }
+
+    if (packet.type !== "tool_call_progress") continue;
+
+    const cls = classifySubagentEvent(packet);
+
+    if (cls.kind === "child") {
+      const sa = ensure(cls.subagentSessionId);
+      const toolCall = toolCallStateFromProgress(packet);
+      subagents.set(cls.subagentSessionId, {
+        ...sa,
+        turns: appendToolCallToLastTurn(sa, toolCall),
+      });
+    } else if (cls.kind === "parentTask") {
+      const sa = ensure(cls.subagentSessionId);
+      const status: SubagentStatus =
+        packet.status === "completed"
+          ? "done"
+          : packet.status === "failed" || packet.status === "cancelled"
+            ? "failed"
+            : "running";
+      // The parent task event drives the INITIAL turn's prompt + response.
+      const turns = sa.turns.length > 0 ? [...sa.turns] : [emptyTurn()];
+      const firstTurn = turns[0] ?? emptyTurn();
+      const response =
+        status === "running"
+          ? firstTurn.response
+          : (firstTurn.response ?? cleanTaskOutput(packet.taskOutput));
+      turns[0] = {
+        ...firstTurn,
+        prompt: firstTurn.prompt || packet.command,
+        response,
+      };
+      subagents.set(cls.subagentSessionId, {
+        ...sa,
+        parentToolCallId: sa.parentToolCallId || packet.toolCallId,
+        subagentType: sa.subagentType ?? packet.subagentType,
+        name: sa.name || subagentNameFromTask(packet),
+        status,
+        turns,
+        completedAt: status === "running" ? sa.completedAt : Date.now(),
+      });
+    }
+  }
+
+  return subagents;
 }
 
 /**
@@ -256,12 +415,15 @@ export type {
 /** Pre-provisioning state machine - exactly one of these states at a time */
 export type PreProvisioningState =
   | { status: "idle" }
-  | { status: "provisioning"; demoDataEnabled: boolean }
-  | { status: "ready"; sessionId: string; demoDataEnabled: boolean }
+  | { status: "provisioning" }
+  | { status: "ready"; sessionId: string }
   | { status: "failed"; error: string; retryCount: number; retryAt: number };
 
 // Module-level variable to store the provisioning promise (not in Zustand state for serializability)
 let provisioningPromise: Promise<string | null> | null = null;
+
+// Monotonic id for queued messages (kept out of Zustand state for simplicity).
+let nextQueuedMessageId = 1;
 
 /** File preview tab data */
 export interface FilePreviewTab {
@@ -277,21 +439,15 @@ export interface FilesTabState {
   directoryCache: Record<string, unknown[]>;
 }
 
-/** Tab history entry - can be a pinned tab or a file preview */
+/** Tab history entry - can be a pinned tab or a transient panel tab */
 export type TabHistoryEntry =
   | { type: "pinned"; tab: OutputTabType }
-  | { type: "file"; path: string };
+  | { type: "panel-tab"; tabId: string };
 
 /** Browser-style tab navigation history */
 export interface TabNavigationHistory {
   entries: TabHistoryEntry[];
   currentIndex: number;
-}
-
-/** Follow-up suggestion bubble */
-export interface SuggestionBubble {
-  theme: "add" | "question";
-  text: string;
 }
 
 /** Output panel tab types */
@@ -310,10 +466,24 @@ export interface BuildSessionData {
    * Rendered directly without transformation.
    */
   streamItems: StreamItem[];
+  /**
+   * Messages typed while a response is streaming. Auto-sent FIFO once the
+   * current run finishes (see the auto-send effect in BuildChatPanel).
+   */
+  queuedMessages: QueuedMessage[];
+  /**
+   * True between an interrupt request and the turn actually terminating. Drives
+   * the "stopping…" affordance; cleared by each terminal stream handler (and on
+   * a fresh turn / aborted fetch).
+   */
+  isInterrupting: boolean;
   error: string | null;
   webappUrl: string | null;
   /** Sandbox info from backend */
   sandbox: ApiSandboxResponse | null;
+  /** Model this session runs on (from the row); seeds the composer picker. */
+  agentProvider: string | null;
+  agentModel: string | null;
   abortController: AbortController;
   lastAccessed: Date;
   isLoaded: boolean;
@@ -322,20 +492,25 @@ export interface BuildSessionData {
   webappNeedsRefresh: number;
   /** Counter to trigger files list refresh when outputs/ directory changes (increments on each write/edit) */
   filesNeedsRefresh: number;
-  /** File preview tabs open in this session */
-  filePreviewTabs: FilePreviewTab[];
+  /** Transient panel tabs open in this session (files, subagents, etc.) */
+  panelTabs: PanelTab[];
+  /** Subagents spawned in this session, keyed by child opencode session id. */
+  subagents: Map<string, SubagentState>;
+  /**
+   * When non-null, the main (left) column shows this subagent's transcript
+   * in place of the chat. `null` = normal chat view.
+   */
+  viewedSubagentSessionId: string | null;
   /** Active pinned tab in output panel */
   activeOutputTab: OutputTabType;
-  /** Active file preview path (when set, this is the active tab instead of pinned tab) */
-  activeFilePreviewPath: string | null;
+  /** Active transient panel tab ID (when set, takes precedence over pinned tab) */
+  activePanelTabId: string | null;
   /** Files tab state - expanded folders and scroll position */
   filesTabState: FilesTabState;
   /** Browser-style tab navigation history for back/forward */
   tabHistory: TabNavigationHistory;
-  /** Follow-up suggestions after first agent message */
-  followupSuggestions: SuggestionBubble[] | null;
-  /** Whether suggestions are currently being generated */
-  suggestionsLoading: boolean;
+  /** True if the user has manually closed the panel this session; suppresses auto-open-on-first-preview */
+  panelManuallyDismissed: boolean;
 }
 
 interface BuildSessionStore {
@@ -426,6 +601,10 @@ interface BuildSessionStore {
   ) => void;
   clearStreamItems: (sessionId: string) => void;
 
+  // Actions - Queued Messages
+  enqueueMessage: (sessionId: string, text: string) => void;
+  removeQueuedMessage: (sessionId: string, index: number) => void;
+
   // Actions - Abort Control
   setAbortController: (sessionId: string, controller: AbortController) => void;
   abortSession: (sessionId: string) => void;
@@ -460,13 +639,18 @@ interface BuildSessionStore {
   // Files Refresh Actions
   triggerFilesRefresh: (sessionId: string) => void;
 
+  // Auto-open Actions
+  maybeAutoOpenPanelForPreview: (sessionId: string) => void;
+
   // File Preview Actions
   openFilePreview: (sessionId: string, path: string, fileName: string) => void;
   /** Atomically open panel + create file tab + set active for a markdown file detected during streaming */
   openMarkdownPreview: (sessionId: string, filePath: string) => void;
   closeFilePreview: (sessionId: string, path: string) => void;
+  /** Generic: remove the panel tab whose panelTabId === tabId; clears active if it was active. */
+  closePanelTab: (sessionId: string, tabId: string) => void;
   setActiveOutputTab: (sessionId: string, tab: OutputTabType) => void;
-  setActiveFilePreviewPath: (sessionId: string, path: string | null) => void;
+  setActivePanelTabId: (sessionId: string, tabId: string | null) => void;
   /** Set active tab when no session exists (for pre-provisioned sandbox viewing) */
   setNoSessionActiveOutputTab: (tab: OutputTabType) => void;
 
@@ -476,17 +660,53 @@ interface BuildSessionStore {
     updates: Partial<FilesTabState>
   ) => void;
 
+  // Subagent Actions
+  /** Swap the main column to show a subagent's transcript in place of the chat. */
+  viewSubagent: (sessionId: string, subagentSessionId: string) => void;
+  /** Return the main column to the normal chat (main-agent) view. */
+  returnToMainAgent: (sessionId: string) => void;
+  /** Upsert a subagent + one of its tool calls (creates the subagent if absent). */
+  recordSubagentToolCall: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    toolCall: ToolCallState,
+    subagentType: string | null,
+    name: string
+  ) => void;
+  /**
+   * Seed/backfill a subagent's identifying meta from a parent `task` event.
+   * Creates the SubagentState if absent (status "running"); never clobbers
+   * already-known identifying fields.
+   */
+  seedSubagentMeta: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    subagentType: string | null,
+    name: string,
+    prompt: string
+  ) => void;
+  /**
+   * Mark a subagent as completed (or failed), optionally with its response.
+   * When a response is provided, it is set on the LAST turn.
+   */
+  markSubagentComplete: (
+    sessionId: string,
+    subagentSessionId: string,
+    status: SubagentStatus,
+    response?: string | null
+  ) => void;
+  /** Append streamed response text to the LAST turn's response. */
+  appendSubagentResponseChunk: (
+    sessionId: string,
+    subagentSessionId: string,
+    text: string
+  ) => void;
+
   // Tab Navigation History Actions
   navigateTabBack: (sessionId: string) => void;
   navigateTabForward: (sessionId: string) => void;
-
-  // Follow-up Suggestion Actions
-  setFollowupSuggestions: (
-    sessionId: string,
-    suggestions: SuggestionBubble[] | null
-  ) => void;
-  setSuggestionsLoading: (sessionId: string, loading: boolean) => void;
-  clearFollowupSuggestions: (sessionId: string) => void;
 }
 
 // =============================================================================
@@ -503,31 +723,60 @@ const createInitialSessionData = (
   artifacts: [],
   toolCalls: [],
   streamItems: [],
+  queuedMessages: [],
+  isInterrupting: false,
   error: null,
   webappUrl: null,
   sandbox: null,
+  agentProvider: null,
+  agentModel: null,
   abortController: new AbortController(),
   lastAccessed: new Date(),
   isLoaded: false,
   outputPanelOpen: false,
   webappNeedsRefresh: 0,
   filesNeedsRefresh: 0,
-  filePreviewTabs: [],
+  panelTabs: [],
+  subagents: new Map(),
+  viewedSubagentSessionId: null,
   activeOutputTab: "preview",
-  activeFilePreviewPath: null,
+  activePanelTabId: null,
   filesTabState: { expandedPaths: [], scrollTop: 0, directoryCache: {} },
   tabHistory: {
     entries: [{ type: "pinned", tab: "preview" }],
     currentIndex: 0,
   },
-  followupSuggestions: null,
-  suggestionsLoading: false,
+  panelManuallyDismissed: false,
   ...initialData,
 });
 
 // =============================================================================
 // Store
 // =============================================================================
+
+// The dev server is started fire-and-forget, so the backend reports RUNNING
+// before the webapp serves. Poll webapp-info until ready (bounded by maxAttempts).
+export async function waitForWebappReady(
+  sessionId: string,
+  { intervalMs = 1500, maxAttempts = 20 }: WaitForWebappReadyOptions = {}
+): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let info: Awaited<ReturnType<typeof fetchWebappInfo>> | null = null;
+    try {
+      info = await fetchWebappInfo(sessionId);
+    } catch {
+      // keep polling
+    }
+    // Done on a definitive answer (no webapp or serving); errors keep polling.
+    if (info && (!info.has_webapp || info.ready)) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+interface WaitForWebappReadyOptions {
+  intervalMs?: number;
+  maxAttempts?: number;
+}
 
 export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
   currentSessionId: null,
@@ -724,8 +973,10 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
     if (currentSessionId) {
       const session = sessions.get(currentSessionId);
       if (session) {
+        const closing = session.outputPanelOpen;
         updateSessionData(currentSessionId, {
           outputPanelOpen: !session.outputPanelOpen,
+          ...(closing ? { panelManuallyDismissed: true } : {}),
         });
       }
     } else {
@@ -1092,6 +1343,45 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
   },
 
   // ===========================================================================
+  // Queued Messages
+  // ===========================================================================
+
+  enqueueMessage: (sessionId: string, text: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session || session.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
+        return state;
+      }
+      const updatedSession: BuildSessionData = {
+        ...session,
+        queuedMessages: [
+          ...session.queuedMessages,
+          { id: nextQueuedMessageId++, text },
+        ],
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  removeQueuedMessage: (sessionId: string, index: number) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+      const updatedSession: BuildSessionData = {
+        ...session,
+        queuedMessages: session.queuedMessages.filter((_, i) => i !== index),
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  // ===========================================================================
   // Abort Control (mirrors chat's per-session pattern)
   // ===========================================================================
 
@@ -1127,22 +1417,15 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       refreshSessionHistory,
       nameBuildSession,
     } = get();
-    // Read from cookie - single source of truth
-    const demoDataEnabled = getDemoDataEnabled();
 
-    // Create a temporary session ID for optimistic UI
     const tempId = `temp-${Date.now()}`;
     setCurrentSession(tempId);
     updateSessionData(tempId, { status: "creating" });
 
     try {
-      // Get LLM selection from cookie
-      const llmSelection = getBuildLlmSelection();
+      // Provision with the backend default; the per-message override sets it later.
       const sessionData = await apiCreateSession({
         name: prompt.slice(0, 50),
-        demoDataEnabled,
-        llmProviderType: llmSelection?.provider || null,
-        llmModelName: llmSelection?.modelName || null,
       });
       const realSessionId = sessionData.id;
 
@@ -1258,6 +1541,12 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         ? currentSession!.messages
         : consolidateMessagesIntoTurns(messages);
       const streamItems = isStreaming ? currentSession!.streamItems : [];
+      // Reconstruct subagents from the raw (un-consolidated) messages — they
+      // carry the per-packet _meta needed for classification. Preserve the
+      // live map if actively streaming.
+      const subagents = isStreaming
+        ? currentSession!.subagents
+        : buildSubagentsFromMessages(messages);
       const sandbox =
         needsRestore && sessionData.sandbox
           ? { ...sessionData.sandbox, status: "restoring" as const }
@@ -1267,33 +1556,21 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         status,
         messages: resolvedMessages,
         streamItems,
+        subagents,
         artifacts,
         webappUrl,
         sandbox,
+        agentProvider: sessionData.agent_provider,
+        agentModel: sessionData.agent_model,
         error: null,
         isLoaded: true,
       });
 
-      // Now restore the sandbox if needed (messages are already visible).
-      // The backend enforces a timeout and returns an error if restore
-      // takes too long, so no frontend timeout needed here.
       if (needsRestore) {
         try {
           sessionData = await restoreSession(sessionId);
-
-          // Sandbox is now running - fetch artifacts
-          const restoredArtifacts = await fetchArtifacts(sessionId);
-
-          updateSessionData(sessionId, {
-            status: sessionData.status === "active" ? "active" : "idle",
-            artifacts: restoredArtifacts,
-            sandbox: sessionData.sandbox,
-            // Bump so OutputPanel's SWR refetches webapp-info (which
-            // derives the actual webappUrl from the backend).
-            webappNeedsRefresh:
-              (get().sessions.get(sessionId)?.webappNeedsRefresh || 0) + 1,
-          });
         } catch (restoreErr) {
+          // Only a genuine restore failure marks the sandbox failed.
           console.error("Sandbox restore failed:", restoreErr);
           updateSessionData(sessionId, {
             status: "idle",
@@ -1301,6 +1578,32 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
               ? { ...sessionData.sandbox, status: "failed" }
               : null,
           });
+          return;
+        }
+
+        // Hold the chip on "restoring" (and refresh the preview) until the
+        // webapp actually serves, then flip to the real status below.
+        updateSessionData(sessionId, {
+          status: sessionData.status === "active" ? "active" : "idle",
+          sandbox: sessionData.sandbox
+            ? { ...sessionData.sandbox, status: "restoring" }
+            : sessionData.sandbox,
+          webappNeedsRefresh:
+            (get().sessions.get(sessionId)?.webappNeedsRefresh || 0) + 1,
+        });
+
+        await waitForWebappReady(sessionId);
+        updateSessionData(sessionId, { sandbox: sessionData.sandbox });
+
+        // An artifact-fetch failure must NOT flip the sandbox to "failed".
+        try {
+          const restoredArtifacts = await fetchArtifacts(sessionId);
+          updateSessionData(sessionId, { artifacts: restoredArtifacts });
+        } catch (artifactsErr) {
+          console.warn(
+            "Failed to fetch artifacts after restore:",
+            artifactsErr
+          );
         }
       }
     } catch (err) {
@@ -1426,67 +1729,34 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
 
   ensurePreProvisionedSession: async () => {
     const { preProvisioning } = get();
-    // Read from cookie - single source of truth
-    const demoDataEnabled = getDemoDataEnabled();
 
-    // Already have a pre-provisioned session ready
     if (preProvisioning.status === "ready") {
-      // If demoDataEnabled matches, return the existing session
-      if (preProvisioning.demoDataEnabled === demoDataEnabled) {
-        return preProvisioning.sessionId;
-      }
-      // demoDataEnabled changed - invalidate and re-provision
-      const sessionIdToDelete = preProvisioning.sessionId;
-      set({ preProvisioning: { status: "idle" } });
-      apiDeleteSession(sessionIdToDelete).catch((err) => {
-        console.error(
-          "[PreProvision] Failed to delete invalidated session:",
-          err
-        );
-      });
-      // Fall through to create a new session with the current setting
+      return preProvisioning.sessionId;
     }
 
-    // Already provisioning - return existing promise
     if (preProvisioning.status === "provisioning") {
       return provisioningPromise;
     }
 
-    // Handle failed state with retry
-    // Capture retryCount BEFORE resetting to idle (so we can increment it on next failure)
     let currentRetryCount = 0;
     if (preProvisioning.status === "failed") {
       currentRetryCount = preProvisioning.retryCount;
       if (Date.now() < preProvisioning.retryAt) {
-        // Not yet time to retry
         return null;
       }
-      // Time to retry - reset to idle and continue
       set({ preProvisioning: { status: "idle" } });
     }
 
-    // Start new provisioning with current demoDataEnabled value
-
     const promise = (async (): Promise<string | null> => {
       try {
-        // Parse user persona and LLM selection from cookies
-        const persona = getBuildUserPersona();
-        const llmSelection = getBuildLlmSelection();
+        // Default model at provision time; per-message override sets it later.
+        const sessionData = await apiCreateSession({});
 
-        const sessionData = await apiCreateSession({
-          demoDataEnabled,
-          userWorkArea: persona?.workArea || null,
-          userLevel: persona?.level || null,
-          llmProviderType: llmSelection?.provider || null,
-          llmModelName: llmSelection?.modelName || null,
-        });
-
-        provisioningPromise = null; // Clear promise on success
+        provisioningPromise = null;
         set({
           preProvisioning: {
             status: "ready",
             sessionId: sessionData.id,
-            demoDataEnabled,
           },
         });
         return sessionData.id;
@@ -1495,14 +1765,13 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         const errorMessage =
           err instanceof Error ? err.message : "Unknown error";
 
-        // Exponential backoff: 1s, 2s, 4s, 8s, ... max 30s
         const newRetryCount = currentRetryCount + 1;
         const backoffMs = Math.min(
           1000 * Math.pow(2, newRetryCount - 1),
           30000
         );
 
-        provisioningPromise = null; // Clear promise on failure
+        provisioningPromise = null;
         set({
           preProvisioning: {
             status: "failed",
@@ -1517,7 +1786,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
 
     provisioningPromise = promise;
     set({
-      preProvisioning: { status: "provisioning", demoDataEnabled },
+      preProvisioning: { status: "provisioning" },
     });
     return promise;
   },
@@ -1662,6 +1931,28 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
   },
 
   // ===========================================================================
+  // Auto-open Actions
+  // ===========================================================================
+
+  maybeAutoOpenPanelForPreview: (sessionId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+      if (session.outputPanelOpen) return state; // already open
+      if (session.panelManuallyDismissed) return state; // respect user dismissal
+
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, {
+        ...session,
+        outputPanelOpen: true,
+        activeOutputTab: "preview",
+        activePanelTabId: null,
+      });
+      return { sessions: newSessions };
+    });
+  },
+
+  // ===========================================================================
   // File Preview Actions
   // ===========================================================================
 
@@ -1670,20 +1961,19 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const session = state.sessions.get(sessionId);
       if (!session) return state;
 
-      // Check if tab already exists
-      const existingTab = session.filePreviewTabs.find(
-        (tab) => tab.path === path
+      const newTab: PanelTab = { kind: "file", path, fileName };
+      const tabId = panelTabId(newTab);
+
+      const existingTab = session.panelTabs.find(
+        (t) => panelTabId(t) === tabId
       );
 
-      let filePreviewTabs = session.filePreviewTabs;
-      if (!existingTab) {
-        // Add new tab
-        filePreviewTabs = [...session.filePreviewTabs, { path, fileName }];
-      }
+      const panelTabs = existingTab
+        ? session.panelTabs
+        : [...session.panelTabs, newTab];
 
-      // Push to history (truncate forward history if navigating from middle)
       const { tabHistory } = session;
-      const newEntry: TabHistoryEntry = { type: "file", path };
+      const newEntry: TabHistoryEntry = { type: "panel-tab", tabId };
       const newEntries = [
         ...tabHistory.entries.slice(0, tabHistory.currentIndex + 1),
         newEntry,
@@ -1691,8 +1981,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
 
       const updatedSession: BuildSessionData = {
         ...session,
-        filePreviewTabs,
-        activeFilePreviewPath: path, // Always switch to this tab
+        panelTabs,
+        activePanelTabId: tabId,
         tabHistory: {
           entries: newEntries,
           currentIndex: newEntries.length - 1,
@@ -1711,20 +2001,19 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const session = state.sessions.get(sessionId);
       if (!session) return state;
 
-      const existingTab = session.filePreviewTabs.find(
-        (t) => t.path === filePath
-      );
-      let filePreviewTabs = session.filePreviewTabs;
-      if (!existingTab) {
-        filePreviewTabs = [
-          ...session.filePreviewTabs,
-          { path: filePath, fileName },
-        ];
-      }
+      const newTab: PanelTab = { kind: "file", path: filePath, fileName };
+      const tabId = panelTabId(newTab);
 
-      // Push to history (truncate forward history if navigating from middle)
+      const existingTab = session.panelTabs.find(
+        (t) => panelTabId(t) === tabId
+      );
+
+      const panelTabs = existingTab
+        ? session.panelTabs
+        : [...session.panelTabs, newTab];
+
       const { tabHistory } = session;
-      const newEntry: TabHistoryEntry = { type: "file", path: filePath };
+      const newEntry: TabHistoryEntry = { type: "panel-tab", tabId };
       const newEntries = [
         ...tabHistory.entries.slice(0, tabHistory.currentIndex + 1),
         newEntry,
@@ -1733,8 +2022,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const updatedSession: BuildSessionData = {
         ...session,
         outputPanelOpen: true,
-        filePreviewTabs,
-        activeFilePreviewPath: filePath,
+        panelTabs,
+        activePanelTabId: tabId,
         tabHistory: {
           entries: newEntries,
           currentIndex: newEntries.length - 1,
@@ -1752,27 +2041,52 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const session = state.sessions.get(sessionId);
       if (!session) return state;
 
-      // Remove the tab
-      const filePreviewTabs = session.filePreviewTabs.filter(
-        (tab) => tab.path !== path
+      const closingTabId = panelTabId({ kind: "file", path, fileName: "" });
+
+      const panelTabs = session.panelTabs.filter(
+        (t) => panelTabId(t) !== closingTabId
       );
 
-      // If closing the active preview tab, switch to Files tab
-      const activeFilePreviewPath =
-        session.activeFilePreviewPath === path
+      const activePanelTabId =
+        session.activePanelTabId === closingTabId
           ? null
-          : session.activeFilePreviewPath;
+          : session.activePanelTabId;
 
-      // If we closed the active tab, set activeOutputTab to "files"
       const activeOutputTab =
-        session.activeFilePreviewPath === path
+        session.activePanelTabId === closingTabId
           ? "files"
           : session.activeOutputTab;
 
       const updatedSession: BuildSessionData = {
         ...session,
-        filePreviewTabs,
-        activeFilePreviewPath,
+        panelTabs,
+        activePanelTabId,
+        activeOutputTab,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  closePanelTab: (sessionId: string, tabId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const panelTabs = session.panelTabs.filter(
+        (t) => panelTabId(t) !== tabId
+      );
+
+      const wasActive = session.activePanelTabId === tabId;
+      const activePanelTabId = wasActive ? null : session.activePanelTabId;
+      const activeOutputTab = wasActive ? "files" : session.activeOutputTab;
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        panelTabs,
+        activePanelTabId,
         activeOutputTab,
         lastAccessed: new Date(),
       };
@@ -1798,7 +2112,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const updatedSession: BuildSessionData = {
         ...session,
         activeOutputTab: tab,
-        activeFilePreviewPath: null, // Clear file preview when selecting pinned tab
+        activePanelTabId: null, // Clear transient tab when selecting pinned tab
         tabHistory: {
           entries: newEntries,
           currentIndex: newEntries.length - 1,
@@ -1811,16 +2125,16 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
     });
   },
 
-  setActiveFilePreviewPath: (sessionId: string, path: string | null) => {
+  setActivePanelTabId: (sessionId: string, tabId: string | null) => {
     set((state) => {
       const session = state.sessions.get(sessionId);
       if (!session) return state;
 
-      // Push to history if switching to a file (truncate forward history)
+      // Push to history if switching to a panel tab (truncate forward history)
       const { tabHistory } = session;
       let newTabHistory = tabHistory;
-      if (path !== null) {
-        const newEntry: TabHistoryEntry = { type: "file", path };
+      if (tabId !== null) {
+        const newEntry: TabHistoryEntry = { type: "panel-tab", tabId };
         const newEntries = [
           ...tabHistory.entries.slice(0, tabHistory.currentIndex + 1),
           newEntry,
@@ -1833,7 +2147,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
 
       const updatedSession: BuildSessionData = {
         ...session,
-        activeFilePreviewPath: path,
+        activePanelTabId: tabId,
         tabHistory: newTabHistory,
         lastAccessed: new Date(),
       };
@@ -1868,6 +2182,229 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
   },
 
   // ===========================================================================
+  // Subagent Actions
+  // ===========================================================================
+
+  viewSubagent: (sessionId: string, subagentSessionId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+      // Guard against viewing a subagent that doesn't exist in this session.
+      if (!session.subagents.has(subagentSessionId)) return state;
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        viewedSubagentSessionId: subagentSessionId,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  returnToMainAgent: (sessionId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+      if (session.viewedSubagentSessionId === null) return state;
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        viewedSubagentSessionId: null,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  recordSubagentToolCall: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    toolCall: ToolCallState,
+    subagentType: string | null,
+    name: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      const base: SubagentState = existing ?? {
+        sessionId: subagentSessionId,
+        parentToolCallId,
+        subagentType,
+        name,
+        status: "running",
+        turns: [emptyTurn()],
+        startedAt: Date.now(),
+        completedAt: null,
+      };
+
+      // Upsert the tool call into the LAST turn (by id).
+      const turns = base.turns.length > 0 ? [...base.turns] : [emptyTurn()];
+      const last = turns[turns.length - 1] ?? emptyTurn();
+      const tcIndex = last.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+      const toolCalls =
+        tcIndex >= 0
+          ? last.toolCalls.map((tc, i) => (i === tcIndex ? toolCall : tc))
+          : [...last.toolCalls, toolCall];
+      turns[turns.length - 1] = { ...last, toolCalls };
+
+      const updatedSubagent: SubagentState = {
+        ...base,
+        // Backfill identifying fields if they arrive later.
+        parentToolCallId: base.parentToolCallId || parentToolCallId,
+        subagentType: base.subagentType ?? subagentType,
+        name: base.name || name,
+        turns,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, updatedSubagent);
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  seedSubagentMeta: (
+    sessionId: string,
+    subagentSessionId: string,
+    parentToolCallId: string,
+    subagentType: string | null,
+    name: string,
+    prompt: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      const base: SubagentState = existing ?? {
+        sessionId: subagentSessionId,
+        parentToolCallId,
+        subagentType,
+        name,
+        status: "running",
+        turns: [emptyTurn(prompt)],
+        startedAt: Date.now(),
+        completedAt: null,
+      };
+
+      // Ensure turns[0] exists; backfill its prompt without clobbering a
+      // non-empty existing prompt.
+      const turns = base.turns.length > 0 ? [...base.turns] : [emptyTurn()];
+      const firstTurn = turns[0] ?? emptyTurn();
+      turns[0] = { ...firstTurn, prompt: firstTurn.prompt || prompt };
+
+      const updatedSubagent: SubagentState = {
+        ...base,
+        // Seed/backfill identifying fields; never clobber known values.
+        parentToolCallId: base.parentToolCallId || parentToolCallId,
+        subagentType: base.subagentType ?? subagentType,
+        name: base.name || name,
+        turns,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, updatedSubagent);
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  markSubagentComplete: (
+    sessionId: string,
+    subagentSessionId: string,
+    status: SubagentStatus,
+    response?: string | null
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      if (!existing) return state;
+
+      // When a response is provided, set it on the LAST turn.
+      let turns = existing.turns;
+      if (response !== undefined) {
+        turns = existing.turns.length > 0 ? [...existing.turns] : [emptyTurn()];
+        const last = turns[turns.length - 1] ?? emptyTurn();
+        turns[turns.length - 1] = { ...last, response };
+      }
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, {
+        ...existing,
+        status,
+        completedAt: Date.now(),
+        turns,
+      });
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  appendSubagentResponseChunk: (
+    sessionId: string,
+    subagentSessionId: string,
+    text: string
+  ) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return state;
+
+      const existing = session.subagents.get(subagentSessionId);
+      if (!existing) return state;
+
+      const turns =
+        existing.turns.length > 0 ? [...existing.turns] : [emptyTurn()];
+      const last = turns[turns.length - 1] ?? emptyTurn();
+      turns[turns.length - 1] = {
+        ...last,
+        response: (last.response ?? "") + text,
+      };
+
+      const subagents = new Map(session.subagents);
+      subagents.set(subagentSessionId, { ...existing, turns });
+
+      const updatedSession: BuildSessionData = {
+        ...session,
+        subagents,
+        lastAccessed: new Date(),
+      };
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, updatedSession);
+      return { sessions: newSessions };
+    });
+  },
+
+  // ===========================================================================
   // Tab Navigation History Actions
   // ===========================================================================
 
@@ -1883,19 +2420,20 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const entry = tabHistory.entries[newIndex];
       if (!entry) return state;
 
-      // Re-open file tab if it was closed
-      let filePreviewTabs = session.filePreviewTabs;
-      if (entry.type === "file") {
-        const tabExists = filePreviewTabs.some(
-          (tab) => tab.path === entry.path
-        );
+      // TODO: extract a shared reconstructPanelTab(tabId) helper, or store the
+      // full PanelTab in TabHistoryEntry instead of just the tabId, to avoid
+      // duplicating this parsing in both navigateTabBack and navigateTabForward.
+      // Re-open panel tab if it was closed
+      let panelTabs = session.panelTabs;
+      if (entry.type === "panel-tab") {
+        const tabExists = panelTabs.some((t) => panelTabId(t) === entry.tabId);
         if (!tabExists) {
-          // Extract filename from path
-          const fileName = entry.path.split("/").pop() || entry.path;
-          filePreviewTabs = [
-            ...filePreviewTabs,
-            { path: entry.path, fileName },
-          ];
+          // Reconstruct a file tab from the ID (format: "file:<path>")
+          if (entry.tabId.startsWith("file:")) {
+            const path = entry.tabId.slice("file:".length);
+            const fileName = path.split("/").pop() || path;
+            panelTabs = [...panelTabs, { kind: "file", path, fileName }];
+          }
         }
       }
 
@@ -1904,8 +2442,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         tabHistory: { ...tabHistory, currentIndex: newIndex },
         activeOutputTab:
           entry.type === "pinned" ? entry.tab : session.activeOutputTab,
-        activeFilePreviewPath: entry.type === "file" ? entry.path : null,
-        filePreviewTabs,
+        activePanelTabId: entry.type === "panel-tab" ? entry.tabId : null,
+        panelTabs,
         lastAccessed: new Date(),
       };
       const newSessions = new Map(state.sessions);
@@ -1927,19 +2465,17 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
       const entry = tabHistory.entries[newIndex];
       if (!entry) return state;
 
-      // Re-open file tab if it was closed
-      let filePreviewTabs = session.filePreviewTabs;
-      if (entry.type === "file") {
-        const tabExists = filePreviewTabs.some(
-          (tab) => tab.path === entry.path
-        );
+      // Re-open panel tab if it was closed
+      let panelTabs = session.panelTabs;
+      if (entry.type === "panel-tab") {
+        const tabExists = panelTabs.some((t) => panelTabId(t) === entry.tabId);
         if (!tabExists) {
-          // Extract filename from path
-          const fileName = entry.path.split("/").pop() || entry.path;
-          filePreviewTabs = [
-            ...filePreviewTabs,
-            { path: entry.path, fileName },
-          ];
+          // Reconstruct a file tab from the ID (format: "file:<path>")
+          if (entry.tabId.startsWith("file:")) {
+            const path = entry.tabId.slice("file:".length);
+            const fileName = path.split("/").pop() || path;
+            panelTabs = [...panelTabs, { kind: "file", path, fileName }];
+          }
         }
       }
 
@@ -1948,65 +2484,8 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
         tabHistory: { ...tabHistory, currentIndex: newIndex },
         activeOutputTab:
           entry.type === "pinned" ? entry.tab : session.activeOutputTab,
-        activeFilePreviewPath: entry.type === "file" ? entry.path : null,
-        filePreviewTabs,
-        lastAccessed: new Date(),
-      };
-      const newSessions = new Map(state.sessions);
-      newSessions.set(sessionId, updatedSession);
-      return { sessions: newSessions };
-    });
-  },
-
-  // ===========================================================================
-  // Follow-up Suggestion Actions
-  // ===========================================================================
-
-  setFollowupSuggestions: (
-    sessionId: string,
-    suggestions: SuggestionBubble[] | null
-  ) => {
-    set((state) => {
-      const session = state.sessions.get(sessionId);
-      if (!session) return state;
-
-      const updatedSession: BuildSessionData = {
-        ...session,
-        followupSuggestions: suggestions,
-        suggestionsLoading: false,
-        lastAccessed: new Date(),
-      };
-      const newSessions = new Map(state.sessions);
-      newSessions.set(sessionId, updatedSession);
-      return { sessions: newSessions };
-    });
-  },
-
-  setSuggestionsLoading: (sessionId: string, loading: boolean) => {
-    set((state) => {
-      const session = state.sessions.get(sessionId);
-      if (!session) return state;
-
-      const updatedSession: BuildSessionData = {
-        ...session,
-        suggestionsLoading: loading,
-        lastAccessed: new Date(),
-      };
-      const newSessions = new Map(state.sessions);
-      newSessions.set(sessionId, updatedSession);
-      return { sessions: newSessions };
-    });
-  },
-
-  clearFollowupSuggestions: (sessionId: string) => {
-    set((state) => {
-      const session = state.sessions.get(sessionId);
-      if (!session) return state;
-
-      const updatedSession: BuildSessionData = {
-        ...session,
-        followupSuggestions: null,
-        suggestionsLoading: false,
+        activePanelTabId: entry.type === "panel-tab" ? entry.tabId : null,
+        panelTabs,
         lastAccessed: new Date(),
       };
       const newSessions = new Map(state.sessions);
@@ -2022,7 +2501,7 @@ export const useBuildSessionStore = create<BuildSessionStore>()((set, get) => ({
 
 // Stable empty references for SSR hydration (prevents infinite loop)
 const EMPTY_ARRAY: never[] = [];
-const EMPTY_FILE_PREVIEW_TABS: FilePreviewTab[] = [];
+const EMPTY_PANEL_TABS: PanelTab[] = [];
 const EMPTY_FILES_TAB_STATE: FilesTabState = {
   expandedPaths: [],
   scrollTop: 0,
@@ -2032,6 +2511,7 @@ const EMPTY_TAB_HISTORY: TabNavigationHistory = {
   entries: [],
   currentIndex: 0,
 };
+const EMPTY_SUBAGENTS: Map<string, SubagentState> = new Map();
 
 export const useCurrentSession = () =>
   useBuildSessionStore((state) => {
@@ -2062,6 +2542,13 @@ export const useIsRunning = () =>
     if (!currentSessionId) return false;
     const session = sessions.get(currentSessionId);
     return session?.status === "running" || session?.status === "creating";
+  });
+
+export const useIsInterrupting = () =>
+  useBuildSessionStore((state) => {
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return false;
+    return sessions.get(currentSessionId)?.isInterrupting ?? false;
   });
 
 export const useMessages = () =>
@@ -2122,11 +2609,6 @@ export const usePreProvisionedSessionId = () =>
       : null
   );
 
-// Demo data selector - reads directly from cookie (single source of truth)
-// Note: This returns the current cookie value but doesn't trigger re-renders on change.
-// Components that need reactive updates should manage their own local state.
-export const useDemoDataEnabled = () => getDemoDataEnabled();
-
 // Controller state selectors (for useBuildSessionController)
 export const useControllerState = () =>
   useBuildSessionStore((state) => state.controllerState);
@@ -2148,6 +2630,16 @@ export const useStreamItems = () =>
     return sessions.get(currentSessionId)?.streamItems ?? EMPTY_ARRAY;
   });
 
+// Queued messages selector
+export const useQueuedMessages = () =>
+  useBuildSessionStore((state) => {
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return EMPTY_QUEUED_MESSAGES;
+    return (
+      sessions.get(currentSessionId)?.queuedMessages ?? EMPTY_QUEUED_MESSAGES
+    );
+  });
+
 // Webapp refresh selector
 export const useWebappNeedsRefresh = () =>
   useBuildSessionStore((state) => {
@@ -2164,14 +2656,12 @@ export const useFilesNeedsRefresh = () =>
     return sessions.get(currentSessionId)?.filesNeedsRefresh ?? 0;
   });
 
-// File preview selectors
-export const useFilePreviewTabs = () =>
+// Panel tab selectors
+export const usePanelTabs = () =>
   useBuildSessionStore((state) => {
     const { currentSessionId, sessions } = state;
-    if (!currentSessionId) return EMPTY_FILE_PREVIEW_TABS;
-    return (
-      sessions.get(currentSessionId)?.filePreviewTabs ?? EMPTY_FILE_PREVIEW_TABS
-    );
+    if (!currentSessionId) return EMPTY_PANEL_TABS;
+    return sessions.get(currentSessionId)?.panelTabs ?? EMPTY_PANEL_TABS;
   });
 
 export const useActiveOutputTab = () =>
@@ -2181,11 +2671,11 @@ export const useActiveOutputTab = () =>
     return sessions.get(currentSessionId)?.activeOutputTab ?? "preview";
   });
 
-export const useActiveFilePreviewPath = () =>
+export const useActivePanelTabId = () =>
   useBuildSessionStore((state) => {
     const { currentSessionId, sessions } = state;
     if (!currentSessionId) return null;
-    return sessions.get(currentSessionId)?.activeFilePreviewPath ?? null;
+    return sessions.get(currentSessionId)?.activePanelTabId ?? null;
   });
 
 export const useFilesTabState = () =>
@@ -2204,17 +2694,47 @@ export const useTabHistory = () =>
     return sessions.get(currentSessionId)?.tabHistory ?? EMPTY_TAB_HISTORY;
   });
 
-// Follow-up suggestion selectors
-export const useFollowupSuggestions = () =>
+// Subagent selectors
+export const useSubagents = () =>
+  useBuildSessionStore((state) => {
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return EMPTY_SUBAGENTS;
+    return sessions.get(currentSessionId)?.subagents ?? EMPTY_SUBAGENTS;
+  });
+
+export const useSubagent = (
+  subagentSessionId: string | null
+): SubagentState | null =>
+  useBuildSessionStore((state) => {
+    if (!subagentSessionId) return null;
+    const { currentSessionId, sessions } = state;
+    if (!currentSessionId) return null;
+    return (
+      sessions.get(currentSessionId)?.subagents.get(subagentSessionId) ?? null
+    );
+  });
+
+/**
+ * Subagent currently shown in the main column, or `null` for the normal chat
+ * view. Returns `null` if the referenced subagent no longer exists.
+ */
+export const useViewedSubagentSessionId = (): string | null =>
   useBuildSessionStore((state) => {
     const { currentSessionId, sessions } = state;
     if (!currentSessionId) return null;
-    return sessions.get(currentSessionId)?.followupSuggestions ?? null;
+    const session = sessions.get(currentSessionId);
+    if (!session) return null;
+    const id = session.viewedSubagentSessionId;
+    if (id === null || !session.subagents.has(id)) return null;
+    return id;
   });
 
-export const useSuggestionsLoading = () =>
+/** Title of the current session, derived from `sessionHistory`. */
+export const useCurrentSessionTitle = (): string | null =>
   useBuildSessionStore((state) => {
-    const { currentSessionId, sessions } = state;
-    if (!currentSessionId) return false;
-    return sessions.get(currentSessionId)?.suggestionsLoading ?? false;
+    const { currentSessionId, sessionHistory } = state;
+    if (!currentSessionId) return null;
+    return (
+      sessionHistory.find((item) => item.id === currentSessionId)?.title ?? null
+    );
   });

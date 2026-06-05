@@ -13,7 +13,6 @@ from onyx.db.models import Credential
 from shared_configs.contextvars import get_current_tenant_id
 from tests.daily.connectors.confluence.models import ExternalUserGroupSet
 
-
 # In order to get these tests to run, use the credentials from Bitwarden.
 # Search up "ENV vars for local and Github tests", and find the Confluence relevant key-value pairs.
 
@@ -101,6 +100,11 @@ _EXPECTED_CONFLUENCE_GROUPS = [
     ExternalUserGroupSet(
         id="jira-servicemanagement-users-danswerai",
         user_emails={"oauth@onyx.app"},
+        gives_anyone_access=False,
+    ),
+    ExternalUserGroupSet(
+        id="no yuhong allowed",
+        user_emails={"hagen@danswer.ai", "pablo@onyx.app", "chris@onyx.app"},
         gives_anyone_access=False,
     ),
 ]

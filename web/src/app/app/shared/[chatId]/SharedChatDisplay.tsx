@@ -1,15 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { humanReadableFormat } from "@/lib/time";
+import { humanReadableFormat } from "@opal/time";
 import { BackendChatSession } from "@/app/app/interfaces";
 import { processRawChatHistory } from "@/app/app/services/lib";
 import { getLatestMessageChain } from "@/app/app/services/messageTree";
 import HumanMessage from "@/app/app/message/HumanMessage";
 import AgentMessage from "@/app/app/message/messageComponents/AgentMessage";
-import { Callout } from "@/components/ui/callout";
 import OnyxInitializingLoader from "@/components/OnyxInitializingLoader";
-import { Persona } from "@/app/admin/agents/interfaces";
+import { Section } from "@/layouts/general-layouts";
+import { IllustrationContent } from "@opal/layouts";
+import SvgNotFound from "@opal/illustrations/not-found";
+import { Button } from "@opal/components";
+import { Agent } from "@/lib/agents/types";
 import { MinimalOnyxDocument } from "@/lib/search/interfaces";
 import PreviewModal from "@/sections/modals/PreviewModal";
 import { UNNAMED_CHAT } from "@/lib/constants";
@@ -19,7 +22,7 @@ import SharedAppInputBar from "@/sections/input/SharedAppInputBar";
 
 export interface SharedChatDisplayProps {
   chatSession: BackendChatSession | null;
-  persona: Persona;
+  persona: Agent;
 }
 
 export default function SharedChatDisplay({
@@ -33,12 +36,17 @@ export default function SharedChatDisplay({
 
   if (!chatSession) {
     return (
-      <div className="min-h-full w-full">
-        <div className="mx-auto w-fit pt-8">
-          <Callout type="danger" title="Shared Chat Not Found">
-            Did not find a shared chat with the specified ID.
-          </Callout>
-        </div>
+      <div className="h-full w-full flex flex-col items-center justify-center">
+        <Section flexDirection="column" alignItems="center" gap={1}>
+          <IllustrationContent
+            illustration={SvgNotFound}
+            title="Shared chat not found"
+            description="Did not find a shared chat with the specified ID."
+          />
+          <Button href="/app" prominence="secondary">
+            Start a new chat
+          </Button>
+        </Section>
       </div>
     );
   }
@@ -51,12 +59,17 @@ export default function SharedChatDisplay({
 
   if (firstMessage === undefined) {
     return (
-      <div className="min-h-full w-full">
-        <div className="mx-auto w-fit pt-8">
-          <Callout type="danger" title="Shared Chat Not Found">
-            No messages found in shared chat.
-          </Callout>
-        </div>
+      <div className="h-full w-full flex flex-col items-center justify-center">
+        <Section flexDirection="column" alignItems="center" gap={1}>
+          <IllustrationContent
+            illustration={SvgNotFound}
+            title="Shared chat not found"
+            description="No messages found in shared chat."
+          />
+          <Button href="/app" prominence="secondary">
+            Start a new chat
+          </Button>
+        </Section>
       </div>
     );
   }
@@ -139,7 +152,7 @@ export default function SharedChatDisplay({
           )}
         </div>
 
-        <div className="w-full max-w-[50rem] mx-auto px-4 pb-4">
+        <div className="w-full max-w-200 mx-auto px-4 pb-4">
           <SharedAppInputBar />
         </div>
       </div>

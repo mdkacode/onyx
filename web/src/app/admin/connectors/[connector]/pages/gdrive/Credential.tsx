@@ -11,7 +11,6 @@ import { TextFormField, SectionHeader } from "@/components/Field";
 import { Form, Formik } from "formik";
 import { User } from "@/lib/types";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import {
   Credential,
   GoogleDriveCredentialJson,
@@ -19,9 +18,11 @@ import {
 } from "@/lib/connectors/credentials";
 import { refreshAllGoogleData } from "@/lib/googleConnector";
 import { ValidSources } from "@/lib/types";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
 import { FiFile, FiCheck, FiLink, FiAlertTriangle } from "react-icons/fi";
-import { cn, truncateString } from "@/lib/utils";
+import { truncateString } from "@/lib/utils";
+import { cn } from "@opal/utils";
 
 type GoogleDriveCredentialJsonTypes = "authorized_user" | "service_account";
 
@@ -76,7 +77,7 @@ export const DriveJsonUpload = ({ onSuccess }: { onSuccess?: () => void }) => {
         );
         if (response.ok) {
           toast.success("Successfully uploaded app credentials");
-          mutate("/api/manage/admin/connector/google-drive/app-credential");
+          mutate(SWR_KEYS.googleConnectorAppCredential("google-drive"));
           if (onSuccess) {
             onSuccess();
           }
@@ -99,9 +100,7 @@ export const DriveJsonUpload = ({ onSuccess }: { onSuccess?: () => void }) => {
         );
         if (response.ok) {
           toast.success("Successfully uploaded service account key");
-          mutate(
-            "/api/manage/admin/connector/google-drive/service-account-key"
-          );
+          mutate(SWR_KEYS.googleConnectorServiceAccountKey("google-drive"));
           if (onSuccess) {
             onSuccess();
           }
@@ -254,8 +253,8 @@ export const DriveJsonUploadSection = ({
   if (!isAdmin) {
     return (
       <div>
-        <div className="flex items-start py-3 px-4 bg-yellow-50/30 dark:bg-yellow-900/5 rounded">
-          <FiAlertTriangle className="text-yellow-500 h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+        <div className="flex items-start py-3 px-4 bg-yellow-50/30 dark:bg-yellow-900/5 rounded-sm">
+          <FiAlertTriangle className="text-yellow-500 h-5 w-5 mr-2 mt-0.5 shrink-0" />
           <p className="text-sm">
             Curators are unable to set up the Google Drive credentials. To add a
             Google Drive connector, please contact an administrator.
@@ -290,17 +289,11 @@ export const DriveJsonUploadSection = ({
             <label
               className={cn(
                 "flex h-10 items-center justify-center w-full px-4 py-2 border border-dashed rounded-md transition-colors",
-                false
-                  ? "opacity-70 cursor-not-allowed border-background-400 bg-background-50/30"
-                  : "cursor-pointer hover:bg-background-50/30 hover:border-primary dark:hover:border-primary border-background-300 dark:border-background-600"
+                "cursor-pointer hover:bg-background-50/30 hover:border-primary dark:hover:border-primary border-background-300 dark:border-background-600"
               )}
             >
               <div className="flex items-center space-x-2">
-                {false ? (
-                  <div className="h-4 w-4 border-t-2 border-b-2 border-primary rounded-full animate-spin"></div>
-                ) : (
-                  <FiFile className="h-4 w-4 text-text-500" />
-                )}
+                <FiFile className="h-4 w-4 text-text-500" />
                 <span className="text-sm text-text-500">
                   {truncateString(
                     localServiceAccountData?.service_account_email ||
@@ -319,8 +312,10 @@ export const DriveJsonUploadSection = ({
                 onClick={async () => {
                   const endpoint =
                     localServiceAccountData?.service_account_email
-                      ? "/api/manage/admin/connector/google-drive/service-account-key"
-                      : "/api/manage/admin/connector/google-drive/app-credential";
+                      ? SWR_KEYS.googleConnectorServiceAccountKey(
+                          "google-drive"
+                        )
+                      : SWR_KEYS.googleConnectorAppCredential("google-drive");
 
                   const response = await fetch(endpoint, {
                     method: "DELETE",
@@ -334,14 +329,14 @@ export const DriveJsonUploadSection = ({
                     );
 
                     // Add additional mutations to refresh all credential-related endpoints
+                    mutate(SWR_KEYS.googleConnectorCredentials("google-drive"));
                     mutate(
-                      "/api/manage/admin/connector/google-drive/credentials"
+                      SWR_KEYS.googleConnectorPublicCredential("google-drive")
                     );
                     mutate(
-                      "/api/manage/admin/connector/google-drive/public-credential"
-                    );
-                    mutate(
-                      "/api/manage/admin/connector/google-drive/service-account-credential"
+                      SWR_KEYS.googleConnectorServiceAccountCredential(
+                        "google-drive"
+                      )
                     );
 
                     toast.success(
@@ -457,11 +452,11 @@ export const DriveAuthSection = ({
     return (
       <div>
         <div className="mt-4">
-          <div className="py-3 px-4 bg-blue-50/30 dark:bg-blue-900/5 rounded mb-4 flex items-start">
-            <FiCheck className="text-blue-500 h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+          <div className="py-3 px-4 bg-blue-50/30 dark:bg-blue-900/5 rounded-sm mb-4 flex items-start">
+            <FiCheck className="text-blue-500 h-5 w-5 mr-2 mt-0.5 shrink-0" />
             <div className="flex-1">
               <span className="font-medium block">Authentication Complete</span>
-              <p className="text-sm mt-1 text-text-500 dark:text-text-400 break-words">
+              <p className="text-sm mt-1 text-text-500 dark:text-text-400 wrap-break-word">
                 Your Google Drive credentials have been successfully uploaded
                 and authenticated.
               </p>
@@ -493,8 +488,8 @@ export const DriveAuthSection = ({
       <div>
         <SectionHeader>Google Drive Authentication</SectionHeader>
         <div className="mt-4">
-          <div className="flex items-start py-3 px-4 bg-yellow-50/30 dark:bg-yellow-900/5 rounded">
-            <FiAlertTriangle className="text-yellow-500 h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start py-3 px-4 bg-yellow-50/30 dark:bg-yellow-900/5 rounded-sm">
+            <FiAlertTriangle className="text-yellow-500 h-5 w-5 mr-2 mt-0.5 shrink-0" />
             <p className="text-sm">
               Please complete Step 1 by uploading either OAuth credentials or a
               Service Account key before proceeding with authentication.
@@ -562,11 +557,9 @@ export const DriveAuthSection = ({
                   subtext="Enter the email of an admin/owner of the Google Organization that owns the Google Drive(s) you want to index."
                 />
                 <div className="flex">
-                  <Disabled disabled={isSubmitting}>
-                    <Button type="submit">
-                      {isSubmitting ? "Creating..." : "Create Credential"}
-                    </Button>
-                  </Disabled>
+                  <Button disabled={isSubmitting} type="submit">
+                    {isSubmitting ? "Creating..." : "Create Credential"}
+                  </Button>
                 </div>
               </Form>
             )}
@@ -579,42 +572,41 @@ export const DriveAuthSection = ({
   if (localAppCredentialData?.client_id) {
     return (
       <div>
-        <div className="bg-background-50/30 dark:bg-background-900/20 rounded mb-4">
+        <div className="bg-background-50/30 dark:bg-background-900/20 rounded-sm mb-4">
           <p className="text-sm">
             Next, you need to authenticate with Google Drive via OAuth. This
             gives us read access to the documents you have access to in your
             Google Drive account.
           </p>
         </div>
-        <Disabled disabled={isAuthenticating}>
-          <Button
-            onClick={async () => {
-              setIsAuthenticating(true);
-              try {
-                const [authUrl, errorMsg] = await setupGoogleDriveOAuth({
-                  isAdmin: true,
-                  name: "OAuth (uploaded)",
-                });
+        <Button
+          disabled={isAuthenticating}
+          onClick={async () => {
+            setIsAuthenticating(true);
+            try {
+              const [authUrl, errorMsg] = await setupGoogleDriveOAuth({
+                isAdmin: true,
+                name: "OAuth (uploaded)",
+              });
 
-                if (authUrl) {
-                  router.push(authUrl as Route);
-                } else {
-                  toast.error(errorMsg);
-                  setIsAuthenticating(false);
-                }
-              } catch (error) {
-                toast.error(
-                  `Failed to authenticate with Google Drive - ${error}`
-                );
+              if (authUrl) {
+                router.push(authUrl as Route);
+              } else {
+                toast.error(errorMsg);
                 setIsAuthenticating(false);
               }
-            }}
-          >
-            {isAuthenticating
-              ? "Authenticating..."
-              : "Authenticate with Google Drive"}
-          </Button>
-        </Disabled>
+            } catch (error) {
+              toast.error(
+                `Failed to authenticate with Google Drive - ${error}`
+              );
+              setIsAuthenticating(false);
+            }
+          }}
+        >
+          {isAuthenticating
+            ? "Authenticating..."
+            : "Authenticate with Google Drive"}
+        </Button>
       </div>
     );
   }

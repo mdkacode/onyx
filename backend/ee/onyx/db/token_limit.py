@@ -59,12 +59,9 @@ def _add_user_filters(stmt: Select, user: User, get_editable: bool = True) -> Se
             user_groups = user_groups.where(
                 User__UserGroup.is_curator == True  # noqa: E712
             )
-        where_clause &= (
-            ~exists()
-            .where(TRLimit_UG.rate_limit_id == TokenRateLimit.id)
-            .where(~TRLimit_UG.user_group_id.in_(user_groups))
-            .correlate(TokenRateLimit)
-        )
+        where_clause &= ~exists().where(
+            TRLimit_UG.rate_limit_id == TokenRateLimit.id
+        ).where(~TRLimit_UG.user_group_id.in_(user_groups)).correlate(TokenRateLimit)
 
     return stmt.where(where_clause)
 
@@ -115,8 +112,14 @@ def fetch_user_group_token_rate_limits_for_user(
     ordered: bool = True,
     get_editable: bool = True,
 ) -> Sequence[TokenRateLimit]:
-    stmt = select(TokenRateLimit)
-    stmt = stmt.where(User__UserGroup.user_group_id == group_id)
+    stmt = (
+        select(TokenRateLimit)
+        .join(
+            TokenRateLimit__UserGroup,
+            TokenRateLimit.id == TokenRateLimit__UserGroup.rate_limit_id,
+        )
+        .where(TokenRateLimit__UserGroup.user_group_id == group_id)
+    )
     stmt = _add_user_filters(stmt, user, get_editable)
 
     if enabled_only:

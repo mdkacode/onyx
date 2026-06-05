@@ -83,6 +83,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
           env:
             - name: MCP_SERVER_ENABLED
               value: "true"
@@ -99,6 +103,9 @@ spec:
             - name: API_SERVER_URL_OVERRIDE_FOR_HTTP_REQUESTS
               value: "http://{{ include "onyx.fullname" . }}-api-service:{{ .Values.api.service.servicePort }}"
             {{- include "onyx.envSecrets" . | nindent 12 }}
+            {{- with .Values.mcpServer.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.mcpServer.volumeMounts }}
           volumeMounts:
             {{- toYaml . | nindent 12 }}

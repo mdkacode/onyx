@@ -6,7 +6,7 @@ import {
   usePersonaUniqueUsers,
 } from "../lib";
 import { DateRangePickerValue } from "@/components/dateRangeSelectors/AdminDateRangeSelector";
-import Text from "@/components/ui/text";
+import { Text } from "@opal/components";
 import Title from "@/components/ui/title";
 import CardSection from "@/components/admin/CardSection";
 import { AreaChartDisplay } from "@/components/ui/areaChart";
@@ -18,13 +18,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useState, useMemo, useEffect } from "react";
-import { Persona } from "@/app/admin/agents/interfaces";
+import { Agent } from "@/lib/agents/types";
 
 export function PersonaMessagesChart({
   availablePersonas,
   timeRange,
 }: {
-  availablePersonas: Persona[];
+  availablePersonas: Agent[];
   timeRange: DateRangePickerValue;
 }) {
   const [selectedPersonaId, setSelectedPersonaId] = useState<
@@ -180,7 +180,9 @@ export function PersonaMessagesChart({
     <CardSection className="mt-8">
       <Title>Agent Analytics</Title>
       <div className="flex flex-col gap-4">
-        <Text>Messages and unique users per day for the selected agent</Text>
+        <Text as="p">
+          Messages and unique users per day for the selected agent
+        </Text>
         <div className="flex items-center gap-4">
           <Select
             value={selectedPersonaId?.toString() ?? ""}
@@ -195,7 +197,7 @@ export function PersonaMessagesChart({
               <div className="flex items-center px-2 pb-2 sticky top-0 bg-background border-b">
                 <Search className="h-4 w-4 mr-2 shrink-0 opacity-50" />
                 <input
-                  className="flex h-8 w-full rounded-sm bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-8 w-full rounded-xs bg-transparent py-3 text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   placeholder="Search agents..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}

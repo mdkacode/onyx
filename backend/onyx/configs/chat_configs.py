@@ -7,6 +7,12 @@ NUM_RETURNED_HITS = 50
 # May be less depending on model
 MAX_CHUNKS_FED_TO_CHAT = int(os.environ.get("MAX_CHUNKS_FED_TO_CHAT") or 25)
 
+# Maximum number of LLM cycles (one tool-call round-trip per cycle) before the
+# agent is forced to answer. Default 6 covers the common search → open_url
+# pattern documented at the call site; raise via env when integrating with
+# tool-heavy MCPs that legitimately need more turns.
+MAX_LLM_CYCLES: int = int(os.environ.get("MAX_LLM_CYCLES") or 6)
+
 # 1 / (1 + DOC_TIME_DECAY * doc-age-in-years), set to 0 to have no decay
 # Capped in Vespa at 0.5
 DOC_TIME_DECAY = float(
@@ -24,11 +30,11 @@ CONTEXT_CHUNKS_BELOW = int(os.environ.get("CONTEXT_CHUNKS_BELOW") or 1)
 LLM_SOCKET_READ_TIMEOUT = int(
     os.environ.get("LLM_SOCKET_READ_TIMEOUT") or "60"
 )  # 60 seconds
-# Weighting factor between Vector and Keyword Search, 1 for completely vector search
+# Weighting factor between vector and keyword Search; 1 for completely vector
+# search, 0 for keyword. Enforces a valid range of [0, 1]. A supplied value from
+# the env outside of this range will be clipped to the respective end of the
+# range. Defaults to 0.5.
 HYBRID_ALPHA = max(0, min(1, float(os.environ.get("HYBRID_ALPHA") or 0.5)))
-HYBRID_ALPHA_KEYWORD = max(
-    0, min(1, float(os.environ.get("HYBRID_ALPHA_KEYWORD") or 0.4))
-)
 # Weighting factor between Title and Content of documents during search, 1 for completely
 # Title based. Default heavily favors Content because Title is also included at the top of
 # Content. This is to avoid cases where the Content is very relevant but it may not be clear

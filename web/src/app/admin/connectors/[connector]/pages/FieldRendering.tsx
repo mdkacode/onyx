@@ -8,11 +8,10 @@ import FileInput from "./ConnectorInput/FileInput";
 import { ConfigurableSources } from "@/lib/types";
 import { Credential } from "@/lib/connectors/credentials";
 import CollapsibleSection from "@/app/admin/agents/CollapsibleSection";
-import Tabs from "@/refresh-components/Tabs";
+import { Tabs } from "@opal/components";
 import { useFormikContext } from "formik";
 import * as GeneralLayouts from "@/layouts/general-layouts";
-import * as InputLayouts from "@/layouts/input-layouts";
-import { Content } from "@opal/layouts";
+import { Content, InputVertical } from "@opal/layouts";
 import CheckboxField from "@/refresh-components/form/LabeledCheckboxField";
 import InputTextAreaField from "@/refresh-components/form/InputTextAreaField";
 import Text from "@/refresh-components/texts/Text";
@@ -141,11 +140,11 @@ export const RenderField: FC<RenderFieldProps> = ({
   const disabled =
     typeof field.disabled === "function"
       ? field.disabled(currentCredential)
-      : field.disabled ?? false;
+      : (field.disabled ?? false);
   const initialValue =
     typeof field.initial === "function"
       ? field.initial(currentCredential)
-      : field.initial ?? "";
+      : (field.initial ?? "");
 
   // if initialValue exists, prepopulate the field with it
   useEffect(() => {
@@ -225,11 +224,11 @@ export const RenderField: FC<RenderFieldProps> = ({
         </GeneralLayouts.Section>
       ) : field.type === "text" ? (
         field.isTextArea ? (
-          <InputLayouts.Vertical
-            name={field.name}
+          <InputVertical
+            withLabel={field.name}
             title={label}
             description={description}
-            optional={field.optional}
+            suffix={field.optional ? "optional" : undefined}
           >
             <InputTextAreaField
               name={field.name}
@@ -237,7 +236,7 @@ export const RenderField: FC<RenderFieldProps> = ({
               variant={disabled ? "disabled" : undefined}
               rows={1}
             />
-          </InputLayouts.Vertical>
+          </InputVertical>
         ) : (
           <TextFormField
             subtext={description}

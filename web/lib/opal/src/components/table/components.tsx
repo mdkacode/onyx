@@ -21,7 +21,7 @@ import QualifierContainer from "@opal/components/table/QualifierContainer";
 import ActionsContainer from "@opal/components/table/ActionsContainer";
 import DragOverlayRow from "@opal/components/table/DragOverlayRow";
 import Footer from "@opal/components/table/Footer";
-import Checkbox from "@/refresh-components/inputs/Checkbox";
+import { Checkbox } from "@opal/components";
 import { TableSizeProvider } from "@opal/components/table/TableSizeContext";
 import { ColumnVisibilityPopover } from "@opal/components/table/ColumnVisibilityPopover";
 import { SortingPopover } from "@opal/components/table/ColumnSortabilityPopover";
@@ -145,6 +145,8 @@ export function Table<TData>(props: DataTableProps<TData>) {
     pageSize,
     initialSorting,
     initialColumnVisibility,
+    initialRowSelection,
+    initialViewSelected,
     draggable,
     footer,
     size = "lg",
@@ -221,6 +223,8 @@ export function Table<TData>(props: DataTableProps<TData>) {
     pageSize: effectivePageSize,
     initialSorting,
     initialColumnVisibility,
+    initialRowSelection,
+    initialViewSelected,
     getRowId,
     onSelectionChange,
     searchTerm,
@@ -582,7 +586,10 @@ export function Table<TData>(props: DataTableProps<TData>) {
 
                       // Data / Display cell
                       return (
-                        <TableCell key={cell.id}>
+                        <TableCell
+                          key={cell.id}
+                          data-column-id={cell.column.id}
+                        >
                           {flexRender(
                             cell.column.columnDef.cell,
                             cell.getContext()

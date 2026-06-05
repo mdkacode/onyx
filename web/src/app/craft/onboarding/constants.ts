@@ -3,126 +3,15 @@
 // =============================================================================
 
 export interface BuildLlmSelection {
-  providerName: string; // e.g., "build-mode-anthropic" (LLMProviderDescriptor.name)
+  providerName: string; // LLMProviderDescriptor.name (any configured provider)
   provider: string; // e.g., "anthropic"
-  modelName: string; // e.g., "claude-opus-4-6"
+  modelName: string; // e.g., "claude-opus-4-7"
 }
 
-// Priority order for smart default LLM selection
-const LLM_SELECTION_PRIORITY = [
-  { provider: "anthropic", modelName: "claude-opus-4-6" },
-  { provider: "openai", modelName: "gpt-5.2" },
-  { provider: "openrouter", modelName: "minimax/minimax-m2.1" },
-] as const;
+export type ProviderKey = "anthropic" | "openai" | "openrouter";
 
-// Minimal provider interface for selection logic
-interface MinimalLlmProvider {
-  name: string;
-  provider: string;
-  model_configurations: { name: string; is_visible: boolean }[];
-}
-
-/**
- * Get the best default LLM selection based on available providers.
- * Priority: Anthropic > OpenAI > OpenRouter > first available
- */
-export function getDefaultLlmSelection(
-  llmProviders: MinimalLlmProvider[] | undefined
-): BuildLlmSelection | null {
-  if (!llmProviders || llmProviders.length === 0) return null;
-
-  // Try each priority provider in order
-  for (const { provider, modelName } of LLM_SELECTION_PRIORITY) {
-    const matchingProvider = llmProviders.find((p) => p.provider === provider);
-    if (matchingProvider) {
-      return {
-        providerName: matchingProvider.name,
-        provider: matchingProvider.provider,
-        modelName,
-      };
-    }
-  }
-
-  // Fallback: first available provider, use its first visible model
-  const firstProvider = llmProviders[0];
-  if (firstProvider) {
-    const firstModel = firstProvider.model_configurations.find(
-      (m) => m.is_visible
-    );
-    return {
-      providerName: firstProvider.name,
-      provider: firstProvider.provider,
-      modelName: firstModel?.name ?? "",
-    };
-  }
-
-  return null;
-}
-
-// Recommended models config (for UI display)
-export const RECOMMENDED_BUILD_MODELS = {
-  preferred: {
-    provider: "anthropic",
-    modelName: "claude-opus-4-6",
-    displayName: "Claude Opus 4.6",
-  },
-  alternatives: [
-    { provider: "anthropic", modelName: "claude-sonnet-4-6" },
-    { provider: "openai", modelName: "gpt-5.2" },
-    { provider: "openai", modelName: "gpt-5.1-codex" },
-    { provider: "openrouter", modelName: "minimax/minimax-m2.1" },
-  ],
-} as const;
-
-// Cookie utilities
-const BUILD_LLM_COOKIE_KEY = "build_llm_selection";
-
-export function getBuildLlmSelection(): BuildLlmSelection | null {
-  if (typeof document === "undefined") return null;
-  const cookie = document.cookie
-    .split("; ")
-    .find((row) => row.startsWith(`${BUILD_LLM_COOKIE_KEY}=`));
-  if (!cookie) return null;
-  try {
-    const value = cookie.split("=")[1];
-    if (!value) return null;
-    return JSON.parse(decodeURIComponent(value));
-  } catch {
-    return null;
-  }
-}
-
-export function setBuildLlmSelection(selection: BuildLlmSelection): void {
-  if (typeof document === "undefined") return;
-  const value = encodeURIComponent(JSON.stringify(selection));
-  // Cookie expires in 1 year
-  const expires = new Date(
-    Date.now() + 365 * 24 * 60 * 60 * 1000
-  ).toUTCString();
-  document.cookie = `${BUILD_LLM_COOKIE_KEY}=${value}; path=/; expires=${expires}; SameSite=Lax`;
-}
-
-export function clearBuildLlmSelection(): void {
-  if (typeof document === "undefined") return;
-  document.cookie = `${BUILD_LLM_COOKIE_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-}
-
-export function isRecommendedModel(
-  provider: string,
-  modelName: string
-): boolean {
-  const { preferred, alternatives } = RECOMMENDED_BUILD_MODELS;
-  // Exact match for preferred model
-  if (preferred.provider === provider && modelName === preferred.modelName) {
-    return true;
-  }
-  // Exact match for alternatives
-  return alternatives.some(
-    (alt) => alt.provider === provider && modelName === alt.modelName
-  );
-}
-
-// Curated providers for Build mode (shared between BuildOnboardingModal and BuildLLMPopover)
+// Single source of truth for Craft providers/models; everything below derives
+// from it (allowed types, recommended flags, default selection).
 export interface BuildModeModel {
   name: string;
   label: string;
@@ -130,7 +19,7 @@ export interface BuildModeModel {
 }
 
 export interface BuildModeProvider {
-  key: string;
+  key: ProviderKey;
   label: string;
   providerName: string;
   recommended?: boolean;
@@ -148,7 +37,8 @@ export const BUILD_MODE_PROVIDERS: BuildModeProvider[] = [
     providerName: "anthropic",
     recommended: true,
     models: [
-      { name: "claude-opus-4-6", label: "Claude Opus 4.6", recommended: true },
+      { name: "claude-opus-4-8", label: "Claude Opus 4.8", recommended: true },
+      { name: "claude-opus-4-7", label: "Claude Opus 4.7" },
       { name: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     ],
     apiKeyPlaceholder: "sk-ant-...",
@@ -160,8 +50,9 @@ export const BUILD_MODE_PROVIDERS: BuildModeProvider[] = [
     label: "OpenAI",
     providerName: "openai",
     models: [
-      { name: "gpt-5.2", label: "GPT-5.2", recommended: true },
-      { name: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
+      { name: "gpt-5.5", label: "GPT-5.5", recommended: true },
+      { name: "gpt-5.4", label: "GPT-5.4" },
+      { name: "gpt-5.3", label: "GPT-5.3" },
     ],
     apiKeyPlaceholder: "sk-...",
     apiKeyUrl: "https://platform.openai.com/api-keys",
@@ -173,9 +64,13 @@ export const BUILD_MODE_PROVIDERS: BuildModeProvider[] = [
     providerName: "openrouter",
     models: [
       {
-        name: "minimax/minimax-m2.1",
-        label: "MiniMax M2.1",
+        name: "minimax/minimax-m3",
+        label: "MiniMax M3",
         recommended: true,
+      },
+      {
+        name: "moonshotai/kimi-k2.6",
+        label: "Kimi K2.6",
       },
     ],
     apiKeyPlaceholder: "sk-or-...",
@@ -184,204 +79,94 @@ export const BUILD_MODE_PROVIDERS: BuildModeProvider[] = [
   },
 ];
 
-// =============================================================================
-// User Info/Persona Constants
-// =============================================================================
+// Allowed provider types are just the curated providers' keys. Keep
+// BUILD_MODE_PROVIDERS in sync with the backend BUILD_MODE_ALLOWED_PROVIDER_TYPES
+// (enforced by test_build_mode_provider_types_sync.py).
+const ALLOWED_PROVIDER_TYPES = new Set<string>(
+  BUILD_MODE_PROVIDERS.map((p) => p.key)
+);
+const RECOMMENDED_MODEL_NAMES = new Set(
+  BUILD_MODE_PROVIDERS.flatMap((p) =>
+    p.models.filter((m) => m.recommended).map((m) => m.name)
+  )
+);
 
-export interface PersonaInfo {
-  name: string;
-  email: string;
+// Top recommended Craft model's label, derived so UI copy isn't hardcoded.
+export const RECOMMENDED_CRAFT_MODEL_LABEL: string = (() => {
+  const provider =
+    BUILD_MODE_PROVIDERS.find((p) => p.recommended) ?? BUILD_MODE_PROVIDERS[0]!;
+  const model =
+    provider.models.find((m) => m.recommended) ?? provider.models[0]!;
+  return model.label;
+})();
+
+interface MinimalLlmProvider {
+  name: string | null;
+  provider: string;
 }
 
-// Work area enum - derived from PERSONA_MAPPING keys
-export enum WorkArea {
-  ENGINEERING = "engineering",
-  PRODUCT = "product",
-  EXECUTIVE = "executive",
-  SALES = "sales",
-  MARKETING = "marketing",
-  OTHER = "other",
+export function isSupportedProviderType(provider: string): boolean {
+  return ALLOWED_PROVIDER_TYPES.has(provider);
 }
 
-// Level enum - derived from PERSONA_MAPPING structure
-export enum Level {
-  IC = "ic",
-  MANAGER = "manager",
+// True when at least one configured provider is a supported Craft type
+// (anthropic/openai/openrouter). The gate for both onboarding LLM setup and
+// pre-provisioning — an unsupported-only setup (e.g. Azure) can't craft.
+export function hasSupportedCraftProvider(
+  llmProviders: { provider: string }[] | undefined
+): boolean {
+  return !!llmProviders?.some((p) => isSupportedProviderType(p.provider));
 }
 
-// Persona mapping: work_area -> level -> PersonaInfo
-// Matches backend/onyx/server/features/build/sandbox/util/persona_mapping.py
-// This is the source of truth for work areas and levels
-export const PERSONA_MAPPING: Record<WorkArea, Record<Level, PersonaInfo>> = {
-  [WorkArea.ENGINEERING]: {
-    [Level.IC]: {
-      name: "Jiwon Kang",
-      email: "jiwon_kang@netherite-extraction.onyx.app",
-    },
-    [Level.MANAGER]: {
-      name: "Javier Morales",
-      email: "javier_morales@netherite-extraction.onyx.app",
-    },
-  },
-  [WorkArea.SALES]: {
-    [Level.IC]: {
-      name: "Megan Foster",
-      email: "megan_foster@netherite-extraction.onyx.app",
-    },
-    [Level.MANAGER]: {
-      name: "Valeria Cruz",
-      email: "valeria_cruz@netherite-extraction.onyx.app",
-    },
-  },
-  [WorkArea.PRODUCT]: {
-    [Level.IC]: {
-      name: "Michael Anderson",
-      email: "michael_anderson@netherite-extraction.onyx.app",
-    },
-    [Level.MANAGER]: {
-      name: "David Liu",
-      email: "david_liu@netherite-extraction.onyx.app",
-    },
-  },
-  [WorkArea.MARKETING]: {
-    [Level.IC]: {
-      name: "Rahul Patel",
-      email: "rahul_patel@netherite-extraction.onyx.app",
-    },
-    [Level.MANAGER]: {
-      name: "Olivia Reed",
-      email: "olivia_reed@netherite-extraction.onyx.app",
-    },
-  },
-  [WorkArea.EXECUTIVE]: {
-    [Level.IC]: {
-      name: "Sarah Mitchell",
-      email: "sarah_mitchell@netherite-extraction.onyx.app",
-    },
-    [Level.MANAGER]: {
-      name: "Sarah Mitchell",
-      email: "sarah_mitchell@netherite-extraction.onyx.app",
-    },
-  },
-  [WorkArea.OTHER]: {
-    [Level.MANAGER]: {
-      name: "Ralf Schroeder",
-      email: "ralf_schroeder@netherite-extraction.onyx.app",
-    },
-    [Level.IC]: {
-      name: "John Carpenter",
-      email: "john_carpenter@netherite-extraction.onyx.app",
-    },
-  },
-};
-
-// Helper to capitalize first letter
-const capitalize = (str: string): string => {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-};
-
-// Derive WORK_AREA_OPTIONS from WorkArea enum
-export const WORK_AREA_OPTIONS = Object.values(WorkArea).map((value) => ({
-  value,
-  label: capitalize(value),
-}));
-
-// Derive LEVEL_OPTIONS from Level enum
-export const LEVEL_OPTIONS = Object.values(Level).map((value) => ({
-  value,
-  label: value === Level.IC ? "IC" : capitalize(value),
-}));
-
-// Work areas where level selection is required
-// Executive has the same persona for both levels, so level is optional
-export const WORK_AREAS_REQUIRING_LEVEL: WorkArea[] = [
-  WorkArea.ENGINEERING,
-  WorkArea.PRODUCT,
-  WorkArea.SALES,
-  WorkArea.MARKETING,
-  WorkArea.OTHER,
-];
-
-// Helper function to get persona info
-export function getPersonaInfo(
-  workArea: WorkArea,
-  level: Level
-): PersonaInfo | undefined {
-  return PERSONA_MAPPING[workArea]?.[level];
+export function isRecommendedModel(modelName: string): boolean {
+  return RECOMMENDED_MODEL_NAMES.has(modelName);
 }
 
-// Company name for demo personas
-export const DEMO_COMPANY_NAME = "Netherite Extraction Inc.";
-
-// Helper function to get position text from work area and level
-// Executive: "Executive" (no level), Other: "employee", Everything else: show level if available
-export function getPositionText(
-  workArea: WorkArea,
-  level: Level | undefined
-): string {
-  const workAreaLabel =
-    WORK_AREA_OPTIONS.find((opt) => opt.value === workArea)?.label || workArea;
-
-  if (workArea === WorkArea.OTHER) {
-    return "Employee";
-  }
-
-  if (workArea === WorkArea.EXECUTIVE) {
-    return "Executive";
-  }
-
-  if (level) {
-    const levelLabel =
-      LEVEL_OPTIONS.find((opt) => opt.value === level)?.label || level;
-    return `${workAreaLabel} ${levelLabel}`;
-  }
-
-  return workAreaLabel;
+function defaultModelForType(key: ProviderKey): string {
+  const p = BUILD_MODE_PROVIDERS.find((x) => x.key === key)!;
+  return (p.models.find((m) => m.recommended) ?? p.models[0]!).name;
 }
 
-export const BUILD_USER_PERSONA_COOKIE_NAME = "build_user_persona";
+// Highest-priority configured provider of a supported type, with that type's
+// recommended model. Access control is enforced server-side at session create.
+export function getDefaultLlmSelection(
+  llmProviders: MinimalLlmProvider[] | undefined
+): BuildLlmSelection | null {
+  if (!llmProviders || llmProviders.length === 0) return null;
 
-// Helper type for the consolidated cookie
-export interface BuildUserPersona {
-  workArea: WorkArea;
-  level?: Level;
-}
-
-// Helper functions for getting/setting the consolidated cookie
-export function getBuildUserPersona(): BuildUserPersona | null {
-  if (typeof window === "undefined") return null;
-
-  const cookieValue = document.cookie
-    .split("; ")
-    .find((row) => row.startsWith(`${BUILD_USER_PERSONA_COOKIE_NAME}=`))
-    ?.split("=")[1];
-
-  if (!cookieValue) return null;
-
-  try {
-    const parsed = JSON.parse(decodeURIComponent(cookieValue));
-    // Validate and cast to enum types
-    if (
-      parsed.workArea &&
-      Object.values(WorkArea).includes(parsed.workArea as WorkArea)
-    ) {
+  for (const p of BUILD_MODE_PROVIDERS) {
+    const match = llmProviders.find((lp) => lp.provider === p.key);
+    if (match) {
       return {
-        workArea: parsed.workArea as WorkArea,
-        level:
-          parsed.level && Object.values(Level).includes(parsed.level as Level)
-            ? (parsed.level as Level)
-            : undefined,
+        providerName: match.name ?? "",
+        provider: match.provider,
+        modelName: defaultModelForType(p.key),
       };
     }
-    return null;
-  } catch {
-    return null;
   }
+
+  return null;
 }
 
-export function setBuildUserPersona(persona: BuildUserPersona): void {
-  const cookieValue = encodeURIComponent(JSON.stringify(persona));
-  const expires = new Date();
-  expires.setFullYear(expires.getFullYear() + 1);
-  document.cookie = `${BUILD_USER_PERSONA_COOKIE_NAME}=${cookieValue}; path=/; expires=${expires.toUTCString()}`;
+// =============================================================================
+// Onboarding "seen" flag
+// =============================================================================
+
+// Tracks whether the user has dismissed the craft onboarding modal so the
+// intro only auto-shows once.
+const CRAFT_ONBOARDING_SEEN_COOKIE_NAME = "craft_onboarding_seen";
+
+export function getCraftOnboardingSeen(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.cookie
+    .split("; ")
+    .some((row) => row.startsWith(`${CRAFT_ONBOARDING_SEEN_COOKIE_NAME}=`));
+}
+
+export function setCraftOnboardingSeen(): void {
+  if (typeof document === "undefined") return;
+  const expires = new Date(
+    Date.now() + 365 * 24 * 60 * 60 * 1000
+  ).toUTCString();
+  document.cookie = `${CRAFT_ONBOARDING_SEEN_COOKIE_NAME}=1; path=/; expires=${expires}; SameSite=Lax`;
 }

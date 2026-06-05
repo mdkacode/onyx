@@ -14,6 +14,7 @@ from redis.lock import Lock as RedisLock
 from sqlalchemy.orm import Session
 
 from onyx.background.celery.apps.app_base import task_logger
+from onyx.background.celery.celery_redis import celery_get_broker_client
 from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_queued_task_ids
 from onyx.configs.app_configs import JOB_TIMEOUT
@@ -58,6 +59,13 @@ from onyx.redis.redis_connector_delete import RedisConnectorDelete
 from onyx.redis.redis_connector_delete import RedisConnectorDeletePayload
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.redis_pool import get_redis_replica_client
+from onyx.redis.redis_tenant_work_gating import maybe_mark_tenant_active
+from onyx.redis.tenant_redis_client import TenantRedisClient
+from onyx.server.metrics.deletion_metrics import inc_deletion_blocked
+from onyx.server.metrics.deletion_metrics import inc_deletion_completed
+from onyx.server.metrics.deletion_metrics import inc_deletion_fence_reset
+from onyx.server.metrics.deletion_metrics import inc_deletion_started
+from onyx.server.metrics.deletion_metrics import observe_deletion_taskset_duration
 from onyx.utils.variable_functionality import (
     fetch_versioned_implementation_with_fallback,
 )
@@ -101,7 +109,7 @@ def revoke_tasks_blocking_deletion(
                 f"Revoked permissions sync task {permissions_sync_payload.celery_task_id}."
             )
     except Exception:
-        task_logger.exception("Exception while revoking pruning task")
+        task_logger.exception("Exception while revoking permissions sync task")
 
     try:
         prune_payload = redis_connector.prune.payload
@@ -109,7 +117,7 @@ def revoke_tasks_blocking_deletion(
             app.control.revoke(prune_payload.celery_task_id)
             task_logger.info(f"Revoked pruning task {prune_payload.celery_task_id}.")
     except Exception:
-        task_logger.exception("Exception while revoking permissions sync task")
+        task_logger.exception("Exception while revoking pruning task")
 
     try:
         external_group_sync_payload = redis_connector.external_group_sync.payload
@@ -132,7 +140,6 @@ def revoke_tasks_blocking_deletion(
 def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | None:
     r = get_redis_client()
     r_replica = get_redis_replica_client()
-    r_celery: Redis = self.app.broker_connection().channel().client  # type: ignore
 
     lock_beat: RedisLock = r.lock(
         OnyxRedisLocks.CHECK_CONNECTOR_DELETION_BEAT_LOCK,
@@ -149,6 +156,7 @@ def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | N
         if not r.exists(OnyxRedisSignals.BLOCK_VALIDATE_CONNECTOR_DELETION_FENCES):
             # clear fences that don't have associated celery tasks in progress
             try:
+                r_celery = celery_get_broker_client(self.app)
                 validate_connector_deletion_fences(
                     tenant_id, r, r_replica, r_celery, lock_beat
                 )
@@ -159,12 +167,22 @@ def check_for_connector_deletion_task(self: Task, *, tenant_id: str) -> bool | N
 
             r.set(OnyxRedisSignals.BLOCK_VALIDATE_CONNECTOR_DELETION_FENCES, 1, ex=300)
 
-        # collect cc_pair_ids
+        # collect cc_pair_ids and note whether any are in DELETING status
         cc_pair_ids: list[int] = []
+        has_deleting_cc_pair = False
         with get_session_with_current_tenant() as db_session:
             cc_pairs = get_connector_credential_pairs(db_session)
             for cc_pair in cc_pairs:
                 cc_pair_ids.append(cc_pair.id)
+                if cc_pair.status == ConnectorCredentialPairStatus.DELETING:
+                    has_deleting_cc_pair = True
+
+        # Tenant-work-gating hook: mark only when at least one cc_pair is in
+        # DELETING status. Marking on bare cc_pair existence would keep
+        # nearly every tenant in the active set since most have cc_pairs
+        # but almost none are actively being deleted on any given cycle.
+        if has_deleting_cc_pair:
+            maybe_mark_tenant_active(tenant_id, caller="connector_deletion")
 
         # try running cleanup on the cc_pair_ids
         for cc_pair_id in cc_pair_ids:
@@ -299,6 +317,7 @@ def try_generate_document_cc_pair_cleanup_tasks(
                 recent_index_attempts
                 and recent_index_attempts[0].status == IndexingStatus.IN_PROGRESS
             ):
+                inc_deletion_blocked(tenant_id, "indexing")
                 raise TaskDependencyError(
                     "Connector deletion - Delayed (indexing in progress): "
                     f"cc_pair={cc_pair_id} "
@@ -306,11 +325,13 @@ def try_generate_document_cc_pair_cleanup_tasks(
                 )
 
         if redis_connector.prune.fenced:
+            inc_deletion_blocked(tenant_id, "pruning")
             raise TaskDependencyError(
                 f"Connector deletion - Delayed (pruning in progress): cc_pair={cc_pair_id}"
             )
 
         if redis_connector.permissions.fenced:
+            inc_deletion_blocked(tenant_id, "permissions")
             raise TaskDependencyError(
                 f"Connector deletion - Delayed (permissions in progress): cc_pair={cc_pair_id}"
             )
@@ -358,6 +379,7 @@ def try_generate_document_cc_pair_cleanup_tasks(
         # set this only after all tasks have been added
         fence_payload.num_tasks = tasks_generated
         redis_connector.delete.set_fence(fence_payload)
+        inc_deletion_started(tenant_id)
 
     return tasks_generated
 
@@ -365,7 +387,7 @@ def try_generate_document_cc_pair_cleanup_tasks(
 def monitor_connector_deletion_taskset(
     tenant_id: str,
     key_bytes: bytes,
-    r: Redis,  # noqa: ARG001
+    r: TenantRedisClient,  # noqa: ARG001
 ) -> None:
     fence_key = key_bytes.decode("utf-8")
     cc_pair_id_str = RedisConnector.get_id_from_fence_key(fence_key)
@@ -388,18 +410,16 @@ def monitor_connector_deletion_taskset(
         # the fence is setting up but isn't ready yet
         return
 
-    remaining = redis_connector.delete.get_remaining()
-    task_logger.info(
-        f"Connector deletion progress: cc_pair={cc_pair_id} remaining={remaining} initial={fence_data.num_tasks}"
-    )
-    if remaining > 0:
+    # Check if the taskset still exists in Redis without reading its size.
+    # redis.exists() is O(1) and very cheap, whereas scard() on 150k+ items OOMKills.
+    if r.exists(redis_connector.delete.taskset_key):
         with get_session_with_current_tenant() as db_session:
             update_sync_record_status(
                 db_session=db_session,
                 entity_id=cc_pair_id,
                 sync_type=SyncType.CONNECTOR_DELETION,
                 sync_status=SyncStatus.IN_PROGRESS,
-                num_docs_synced=remaining,
+                num_docs_synced=fence_data.num_tasks,
             )
         return
 
@@ -507,7 +527,11 @@ def monitor_connector_deletion_taskset(
                 db_session=db_session,
                 connector_id=connector_id_to_delete,
             )
-            if not connector or not len(connector.credentials):
+            if not connector:
+                task_logger.info(
+                    "Connector deletion - Connector already deleted, skipping connector cleanup"
+                )
+            elif not len(connector.credentials):
                 task_logger.info(
                     "Connector deletion - Found no credentials left for connector, deleting connector"
                 )
@@ -521,6 +545,12 @@ def monitor_connector_deletion_taskset(
                 sync_status=SyncStatus.SUCCESS,
                 num_docs_synced=fence_data.num_tasks,
             )
+
+            duration = (
+                datetime.now(timezone.utc) - fence_data.submitted
+            ).total_seconds()
+            observe_deletion_taskset_duration(tenant_id, "success", duration)
+            inc_deletion_completed(tenant_id, "success")
 
         except Exception as e:
             db_session.rollback()
@@ -540,6 +570,11 @@ def monitor_connector_deletion_taskset(
                 f"Connector deletion exceptioned: "
                 f"cc_pair={cc_pair_id} connector={connector_id_to_delete} credential={credential_id_to_delete}"
             )
+            duration = (
+                datetime.now(timezone.utc) - fence_data.submitted
+            ).total_seconds()
+            observe_deletion_taskset_duration(tenant_id, "failure", duration)
+            inc_deletion_completed(tenant_id, "failure")
             raise e
 
     task_logger.info(
@@ -555,8 +590,8 @@ def monitor_connector_deletion_taskset(
 
 def validate_connector_deletion_fences(
     tenant_id: str,
-    r: Redis,
-    r_replica: Redis,
+    r: TenantRedisClient,
+    r_replica: TenantRedisClient,
     r_celery: Redis,
     lock_beat: RedisLock,
 ) -> None:
@@ -597,7 +632,7 @@ def validate_connector_deletion_fence(
     tenant_id: str,
     key_bytes: bytes,
     queued_upsert_tasks: set[str],
-    r: Redis,
+    r: TenantRedisClient,
 ) -> None:
     """Checks for the error condition where an indexing fence is set but the associated celery tasks don't exist.
     This can happen if the indexing worker hard crashes or is terminated.
@@ -681,8 +716,7 @@ def validate_connector_deletion_fence(
     for member in r.sscan_iter(redis_connector.delete.taskset_key):
         tasks_scanned += 1
 
-        member_bytes = cast(bytes, member)
-        member_str = member_bytes.decode("utf-8")
+        member_str = member.decode("utf-8")
         if member_str in queued_upsert_tasks:
             continue
 
@@ -716,5 +750,6 @@ def validate_connector_deletion_fence(
         f"fence={fence_key}"
     )
 
+    inc_deletion_fence_reset(tenant_id)
     redis_connector.delete.reset()
     return

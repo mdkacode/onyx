@@ -17,7 +17,6 @@ from onyx.llm.constants import OLLAMA_MODEL_NAME_MAPPINGS
 from onyx.llm.constants import OLLAMA_MODEL_TO_VENDOR
 from onyx.llm.constants import PROVIDER_DISPLAY_NAMES
 
-
 # Dynamic providers fetch models directly from source APIs (not LiteLLM)
 DYNAMIC_LLM_PROVIDERS = frozenset(
     {
@@ -25,6 +24,8 @@ DYNAMIC_LLM_PROVIDERS = frozenset(
         LlmProviderNames.BEDROCK,
         LlmProviderNames.OLLAMA_CHAT,
         LlmProviderNames.LM_STUDIO,
+        LlmProviderNames.BIFROST,
+        LlmProviderNames.OPENAI_COMPATIBLE,
     }
 )
 
@@ -47,6 +48,25 @@ BEDROCK_VISION_MODELS = frozenset(
         "amazon.nova-pro",
         "amazon.nova-lite",
         "amazon.nova-premier",
+    }
+)
+
+# Known Bifrost/OpenAI-compatible vision-capable model families where the
+# source API does not expose this metadata directly.
+BIFROST_VISION_MODEL_FAMILIES = frozenset(
+    {
+        "anthropic/claude-3",
+        "anthropic/claude-4",
+        "amazon/nova-pro",
+        "amazon/nova-lite",
+        "amazon/nova-premier",
+        "openai/gpt-4o",
+        "openai/gpt-4.1",
+        "google/gemini",
+        "meta-llama/llama-3.2",
+        "mistral/pixtral",
+        "qwen/qwen2.5-vl",
+        "qwen/qwen-vl",
     }
 )
 
@@ -76,11 +96,18 @@ def is_valid_bedrock_model(
 def infer_vision_support(model_id: str) -> bool:
     """Infer vision support from model ID when base model metadata unavailable.
 
-    Used for cross-region inference profiles when the base model isn't
-    available in the user's region.
+    Used for providers like Bedrock and Bifrost where vision support may
+    need to be inferred from vendor/model naming conventions.
     """
     model_id_lower = model_id.lower()
-    return any(vision_model in model_id_lower for vision_model in BEDROCK_VISION_MODELS)
+    if any(vision_model in model_id_lower for vision_model in BEDROCK_VISION_MODELS):
+        return True
+
+    normalized_model_id = model_id_lower.replace(".", "/")
+    return any(
+        vision_model in normalized_model_id
+        for vision_model in BIFROST_VISION_MODEL_FAMILIES
+    )
 
 
 def generate_bedrock_display_name(model_id: str) -> str:
@@ -155,6 +182,9 @@ def generate_ollama_display_name(model_name: str) -> str:
         "qwen2.5:7b" → "Qwen 2.5 7B"
         "mistral:latest" → "Mistral"
         "deepseek-r1:14b" → "DeepSeek R1 14B"
+        "gemma4:e4b" → "Gemma 4 E4B"
+        "deepseek-v3.1:671b-cloud" → "DeepSeek V3.1 671B Cloud"
+        "qwen3-vl:235b-instruct-cloud" → "Qwen 3-vl 235B Instruct Cloud"
     """
     # Split into base name and tag
     if ":" in model_name:
@@ -181,13 +211,24 @@ def generate_ollama_display_name(model_name: str) -> str:
         # Default: Title case with dashes converted to spaces
         display_name = base.replace("-", " ").title()
 
-    # Process tag to extract size info (skip "latest")
+    # Process tag (skip "latest")
     if tag and tag.lower() != "latest":
-        # Extract size like "7b", "70b", "14b"
-        size_match = re.match(r"^(\d+(?:\.\d+)?[bBmM])", tag)
+        # Check for size prefix like "7b", "70b", optionally followed by modifiers
+        size_match = re.match(r"^(\d+(?:\.\d+)?[bBmM])(-.+)?$", tag)
         if size_match:
             size = size_match.group(1).upper()
-            display_name = f"{display_name} {size}"
+            remainder = size_match.group(2)
+            if remainder:
+                # Format modifiers like "-cloud", "-instruct-cloud"
+                modifiers = " ".join(
+                    p.title() for p in remainder.strip("-").split("-") if p
+                )
+                display_name = f"{display_name} {size} {modifiers}"
+            else:
+                display_name = f"{display_name} {size}"
+        else:
+            # Non-size tags like "e4b", "q4_0", "fp16", "cloud"
+            display_name = f"{display_name} {tag.upper()}"
 
     return display_name
 
@@ -281,12 +322,15 @@ def should_filter_as_dated_duplicate(
 def filter_model_configurations(
     model_configurations: list,
     provider: str,
+    use_stored_display_name: bool = False,
 ) -> list:
     """Filter out obsolete and dated duplicate models from configurations.
 
     Args:
         model_configurations: List of ModelConfiguration DB models
         provider: The provider name (e.g., "openai", "anthropic")
+        use_stored_display_name: If True, prefer the display_name stored in the
+            DB over LiteLLM enrichments. Set for custom-config providers.
 
     Returns:
         List of ModelConfigurationView objects with obsolete/duplicate models removed
@@ -306,7 +350,9 @@ def filter_model_configurations(
         if should_filter_as_dated_duplicate(model_configuration.name, all_model_names):
             continue
         filtered_configs.append(
-            ModelConfigurationView.from_model(model_configuration, provider)
+            ModelConfigurationView.from_model(
+                model_configuration, provider, use_stored_display_name
+            )
         )
 
     return filtered_configs
@@ -322,7 +368,7 @@ def extract_vendor_from_model_name(model_name: str, provider: str) -> str | None
         - Ollama: "llama3:70b" → "Meta"
         - Ollama: "qwen2.5:7b" → "Alibaba"
     """
-    if provider == LlmProviderNames.OPENROUTER:
+    if provider in (LlmProviderNames.OPENROUTER, LlmProviderNames.BIFROST):
         # Format: "vendor/model-name" e.g., "anthropic/claude-3-5-sonnet"
         if "/" in model_name:
             vendor_key = model_name.split("/")[0].lower()

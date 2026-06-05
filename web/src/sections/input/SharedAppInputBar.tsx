@@ -2,8 +2,7 @@
 
 import Text from "@/refresh-components/texts/Text";
 import { Button, OpenButton, SelectButton } from "@opal/components";
-import { Disabled } from "@opal/core";
-import { OpenAISVG } from "@/components/icons/icons";
+import { SvgOpenai } from "@opal/logos";
 import {
   SvgPlusCircle,
   SvgArrowUp,
@@ -27,31 +26,23 @@ export default function SharedAppInputBar() {
         <div className="flex justify-between items-center w-full p-1 min-h-[40px]">
           {/* Left side controls */}
           <div className="flex flex-row items-center">
-            <Disabled disabled>
-              <Button icon={SvgPlusCircle} prominence="tertiary" />
-            </Disabled>
-            <Disabled disabled>
-              <Button icon={SvgSliders} prominence="tertiary" />
-            </Disabled>
-            <Disabled disabled>
-              <SelectButton icon={SvgHourglass} />
-            </Disabled>
+            <Button disabled icon={SvgPlusCircle} prominence="tertiary" />
+            <Button disabled icon={SvgSliders} prominence="tertiary" />
+            <SelectButton disabled icon={SvgHourglass} />
           </div>
 
           {/* Right side controls */}
           <div className="flex flex-row items-center gap-1">
-            <Disabled disabled>
-              <OpenButton icon={OpenAISVG}>GPT-4o</OpenButton>
-            </Disabled>
-            <Disabled disabled>
-              <Button icon={SvgArrowUp} />
-            </Disabled>
+            <OpenButton disabled icon={SvgOpenai}>
+              GPT-4o
+            </OpenButton>
+            <Button disabled icon={SvgArrowUp} />
           </div>
         </div>
       </div>
 
       {/* Fade overlay */}
-      <div className="absolute inset-0 rounded-16 backdrop-blur-sm bg-background-neutral-00/50" />
+      <div className="absolute inset-0 rounded-16 backdrop-blur-xs bg-background-neutral-00/50" />
 
       {/* CTA button */}
       <div className="absolute inset-0 flex items-center justify-center">

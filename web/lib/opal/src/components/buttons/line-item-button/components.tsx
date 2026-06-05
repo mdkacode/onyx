@@ -1,17 +1,11 @@
-import "@opal/components/tooltip.css";
 import {
   Interactive,
-  type InteractiveStatefulState,
-  type InteractiveStatefulInteraction,
   type InteractiveStatefulProps,
   InteractiveContainerRoundingVariant,
 } from "@opal/core";
-import type { ExtremaSizeVariants } from "@opal/types";
-import type { TooltipSide } from "@opal/components";
-import type { DistributiveOmit } from "@opal/types";
-import type { ContentActionProps } from "@opal/layouts/content-action/components";
-import { ContentAction } from "@opal/layouts";
-import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import type { ExtremaSizeVariants, DistributiveOmit } from "@opal/types";
+import { Tooltip, type TooltipSide } from "@opal/components";
+import { type ContentActionProps, ContentAction } from "@opal/layouts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,42 +13,28 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 type ContentPassthroughProps = DistributiveOmit<
   ContentActionProps,
-  "paddingVariant" | "widthVariant" | "ref" | "withInteractive"
+  "padding" | "width" | "ref"
 >;
 
-type LineItemButtonOwnProps = {
+type LineItemButtonOwnProps = Pick<
+  InteractiveStatefulProps,
+  | "state"
+  | "interaction"
+  | "onClick"
+  | "href"
+  | "target"
+  | "group"
+  | "ref"
+  | "type"
+> & {
   /** Interactive select variant. @default "select-light" */
   selectVariant?: "select-light" | "select-heavy";
 
-  /** Value state. @default "empty" */
-  state?: InteractiveStatefulState;
-
-  /** JS-controllable interaction state override. @default "rest" */
-  interaction?: InteractiveStatefulInteraction;
-
-  /** Click handler. */
-  onClick?: InteractiveStatefulProps["onClick"];
-
-  /** When provided, renders an anchor instead of a div. */
-  href?: string;
-
-  /** Anchor target (e.g. "_blank"). */
-  target?: string;
-
-  /** Interactive group key. */
-  group?: string;
-
-  /** Forwarded ref. */
-  ref?: React.Ref<HTMLElement>;
-
-  /** Corner rounding preset (height is always content-driven). @default "default" */
-  roundingVariant?: InteractiveContainerRoundingVariant;
+  /** Corner rounding preset (height is always content-driven). @default "md" */
+  rounding?: InteractiveContainerRoundingVariant;
 
   /** Container width. @default "full" */
   width?: ExtremaSizeVariants;
-
-  /** HTML button type. @default "button" */
-  type?: "submit" | "button" | "reset";
 
   /** Tooltip text shown on hover. */
   tooltip?: string;
@@ -79,11 +59,11 @@ function LineItemButton({
   target,
   group,
   ref,
+  type = "button",
 
   // Sizing
-  roundingVariant = "default",
+  rounding = "md",
   width = "full",
-  type = "button",
   tooltip,
   tooltipSide = "top",
 
@@ -103,34 +83,25 @@ function LineItemButton({
     >
       <Interactive.Container
         type={type}
-        widthVariant={width}
-        heightVariant="lg"
-        roundingVariant={roundingVariant}
+        width={width}
+        size="fit"
+        rounding={rounding}
       >
-        <ContentAction
-          {...(contentActionProps as ContentActionProps)}
-          withInteractive
-          paddingVariant="fit"
-        />
+        <div className="w-full p-2">
+          <ContentAction
+            color="interactive"
+            {...(contentActionProps as ContentActionProps)}
+            padding="fit"
+          />
+        </div>
       </Interactive.Container>
     </Interactive.Stateful>
   );
 
-  if (!tooltip) return item;
-
   return (
-    <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger asChild>{item}</TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal>
-        <TooltipPrimitive.Content
-          className="opal-tooltip"
-          side={tooltipSide}
-          sideOffset={4}
-        >
-          {tooltip}
-        </TooltipPrimitive.Content>
-      </TooltipPrimitive.Portal>
-    </TooltipPrimitive.Root>
+    <Tooltip tooltip={tooltip} side={tooltipSide}>
+      {item}
+    </Tooltip>
   );
 }
 

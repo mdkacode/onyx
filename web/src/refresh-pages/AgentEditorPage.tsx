@@ -2,26 +2,28 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { SettingsLayouts } from "@opal/layouts";
 import * as GeneralLayouts from "@/layouts/general-layouts";
-import Button from "@/refresh-components/buttons/Button";
-import { Button as OpalButton } from "@opal/components";
-import { Disabled } from "@opal/core";
-import { FullPersona } from "@/app/admin/agents/interfaces";
-import { buildImgUrl } from "@/app/app/components/files/images/utils";
+import { Button, Card, Divider, MessageCard } from "@opal/components";
+import { Hoverable, Disabled } from "@opal/core";
+import { FullAgent } from "@/lib/agents/types";
+import { buildAgentAvatarUrl } from "@/lib/agents/utils";
 import { Formik, Form, FieldArray } from "formik";
 import * as Yup from "yup";
 import InputTypeInField from "@/refresh-components/form/InputTypeInField";
 import InputTextAreaField from "@/refresh-components/form/InputTextAreaField";
 import InputTypeInElementField from "@/refresh-components/form/InputTypeInElementField";
 import InputDatePickerField from "@/refresh-components/form/InputDatePickerField";
-import Message from "@/refresh-components/messages/Message";
-import Separator from "@/refresh-components/Separator";
-import * as InputLayouts from "@/layouts/input-layouts";
+import {
+  Card as CardLayout,
+  ContentAction,
+  InputHorizontal,
+  InputVertical,
+} from "@opal/layouts";
 import { useFormikContext } from "formik";
 import LLMSelector from "@/components/llm/LLMSelector";
-import { parseLlmDescriptor, structureValue } from "@/lib/llmConfig/utils";
-import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { parseLlmDescriptor, structureValue } from "@/lib/languageModels/utils";
+import { useLLMProviders } from "@/hooks/useLanguageModels";
 import {
   STARTER_MESSAGES_EXAMPLES,
   MAX_CHARACTERS_STARTER_MESSAGE,
@@ -33,22 +35,22 @@ import {
   PYTHON_TOOL_ID,
   SEARCH_TOOL_ID,
   OPEN_URL_TOOL_ID,
+  CODING_AGENT_TOOL_ID,
 } from "@/app/app/components/tools/constants";
 import Text from "@/refresh-components/texts/Text";
-import { Card } from "@/refresh-components/cards";
 import SimpleCollapsible from "@/refresh-components/SimpleCollapsible";
 import SwitchField from "@/refresh-components/form/SwitchField";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Tooltip } from "@opal/components";
 import { useDocumentSets } from "@/app/admin/documents/sets/hooks";
 import { useProjectsContext } from "@/providers/ProjectsContext";
 import { useCreateModal } from "@/refresh-components/contexts/ModalContext";
 import { toast } from "@/hooks/useToast";
-import UserFilesModal from "@/components/modals/UserFilesModal";
+import UserFilesModal from "@/sections/modals/UserFilesModal";
 import {
   ProjectFile,
   UserFileStatus,
 } from "@/app/app/projects/projectsService";
-import Popover, { PopoverMenu } from "@/refresh-components/Popover";
+import { Popover, PopoverMenu } from "@opal/components";
 import LineItem from "@/refresh-components/buttons/LineItem";
 import {
   SvgActions,
@@ -60,45 +62,42 @@ import {
   SvgSliders,
   SvgUsers,
   SvgTrash,
+  SvgSimpleLoader,
 } from "@opal/icons";
 import CustomAgentAvatar, {
   agentAvatarIconMap,
 } from "@/refresh-components/avatars/CustomAgentAvatar";
 import InputAvatar from "@/refresh-components/inputs/InputAvatar";
 import SquareButton from "@/refresh-components/buttons/SquareButton";
-import { useAgents } from "@/hooks/useAgents";
-import {
-  createPersona,
-  updatePersona,
-  PersonaUpsertParameters,
-} from "@/app/admin/agents/lib";
-import useMcpServersForAgentEditor from "@/hooks/useMcpServersForAgentEditor";
+import { useAgents } from "@/lib/agents/hooks";
+import { createAgent, updateAgent } from "@/lib/agents/svc";
+import { AgentUpsertParameters } from "@/lib/agents/types";
+import { useMcpServersForAgentEditor } from "@/lib/agents/hooks";
 import useOpenApiTools from "@/hooks/useOpenApiTools";
 import { useAvailableTools } from "@/hooks/useAvailableTools";
-import * as ActionsLayouts from "@/layouts/actions-layouts";
-import * as ExpandableCard from "@/layouts/expandable-card-layouts";
 import { getActionIcon } from "@/lib/tools/mcpUtils";
 import { MCPServer, MCPTool, ToolSnapshot } from "@/lib/tools/interfaces";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { InputTypeIn } from "@opal/components";
 import useFilter from "@/hooks/useFilter";
 import EnabledCount from "@/refresh-components/EnabledCount";
 import { useAppRouter } from "@/hooks/appNavigation";
+import { isDateInFuture } from "@/lib/dateUtils";
 import {
   deleteAgent,
   updateAgentFeaturedStatus,
   updateAgentSharedStatus,
-} from "@/lib/agents";
+} from "@/lib/agents/svc";
 import ConfirmationModalLayout from "@/refresh-components/layouts/ConfirmationModalLayout";
 import ShareAgentModal from "@/sections/modals/ShareAgentModal";
 import AgentKnowledgePane from "@/sections/knowledge/AgentKnowledgePane";
 import { ValidSources } from "@/lib/types";
 import { useVectorDbEnabled } from "@/providers/SettingsProvider";
 import { useUser } from "@/providers/UserProvider";
-import SimpleLoader from "@/refresh-components/loaders/SimpleLoader";
-import { usePaidEnterpriseFeaturesEnabled } from "@/components/settings/usePaidEnterpriseFeaturesEnabled";
+import { useTierAtLeast } from "@/hooks/useTierAtLeast";
+import { Tier } from "@/interfaces/settings";
 
 interface AgentIconEditorProps {
-  existingAgent?: FullPersona | null;
+  existingAgent?: FullAgent | null;
 }
 
 function FormWarningsEffect() {
@@ -176,14 +175,14 @@ function AgentIconEditor({ existingAgent }: AgentIconEditorProps) {
 
   const imageSrc = uploadedImagePreview
     ? uploadedImagePreview
-    : values.uploaded_image_id
-      ? buildImgUrl(values.uploaded_image_id)
+    : values.uploaded_image_id && existingAgent?.id != null
+      ? buildAgentAvatarUrl(existingAgent.id)
       : values.icon_name
         ? undefined
         : values.remove_image
           ? undefined
           : existingAgent?.uploaded_image_id
-            ? buildImgUrl(existingAgent.uploaded_image_id)
+            ? buildAgentAvatarUrl(existingAgent.id)
             : undefined;
 
   function handleIconClick(iconName: string | null) {
@@ -211,22 +210,25 @@ function AgentIconEditor({ existingAgent }: AgentIconEditorProps) {
 
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
         <Popover.Trigger asChild>
-          <InputAvatar className="group/InputAvatar relative flex flex-col items-center justify-center h-[7.5rem] w-[7.5rem]">
-            {/* We take the `InputAvatar`'s height/width (in REM) and multiply it by 16 (the REM -> px conversion factor). */}
-            <CustomAgentAvatar
-              size={imageSrc ? 7.5 * 16 : 40}
-              src={imageSrc}
-              iconName={values.icon_name ?? undefined}
-              name={values.name}
-            />
-            {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
-            <Button
-              className="absolute bottom-0 left-1/2 -translate-x-1/2 h-[1.75rem] mb-2 invisible group-hover/InputAvatar:visible"
-              secondary
-            >
-              Edit
-            </Button>
-          </InputAvatar>
+          <Hoverable.Root group="inputAvatar" width="fit">
+            <InputAvatar className="relative flex flex-col items-center justify-center h-30 w-30">
+              {/* We take the `InputAvatar`'s height/width (in REM) and multiply it by 16 (the REM -> px conversion factor). */}
+              <CustomAgentAvatar
+                size={imageSrc ? 7.5 * 16 : 40}
+                src={imageSrc}
+                iconName={values.icon_name ?? undefined}
+                name={values.name}
+              />
+              {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
+              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 mb-2">
+                <Hoverable.Item group="inputAvatar" variant="appear-on-hover">
+                  <Button prominence="secondary" size="md">
+                    Edit
+                  </Button>
+                </Hoverable.Item>
+              </div>
+            </InputAvatar>
+          </Hoverable.Root>
         </Popover.Trigger>
         <Popover.Content>
           <PopoverMenu>
@@ -240,7 +242,7 @@ function AgentIconEditor({ existingAgent }: AgentIconEditorProps) {
                 Upload Image
               </LineItem>,
               null,
-              <div className="grid grid-cols-4 gap-1">
+              <div key="icon-grid" className="grid grid-cols-4 gap-1">
                 <SquareButton
                   key="default-icon"
                   icon={() => (
@@ -276,14 +278,16 @@ function OpenApiToolCard({ tool }: OpenApiToolCardProps) {
   const toolFieldName = `openapi_tool_${tool.id}`;
 
   return (
-    <ExpandableCard.Root defaultFolded>
-      <ActionsLayouts.Header
+    <Card border="solid" rounding="lg">
+      <InputHorizontal
+        icon={SvgActions}
         title={tool.display_name || tool.name}
         description={tool.description}
-        icon={SvgActions}
-        rightChildren={<SwitchField name={toolFieldName} />}
-      />
-    </ExpandableCard.Root>
+        withLabel={toolFieldName}
+      >
+        <SwitchField name={toolFieldName} />
+      </InputHorizontal>
+    </Card>
   );
 }
 
@@ -314,91 +318,121 @@ function MCPServerCard({
     return toolFieldValue === true;
   }).length;
 
+  const hasTools = enabledTools.length > 0 && filteredTools.length > 0;
+
+  let cardContent: React.ReactNode | undefined;
+  if (isLoading) {
+    cardContent = (
+      <div className="flex flex-col gap-2 p-2">
+        <GeneralLayouts.Section padding={1}>
+          <SvgSimpleLoader />
+        </GeneralLayouts.Section>
+      </div>
+    );
+  } else if (hasTools) {
+    cardContent = (
+      <GeneralLayouts.Section gap={0.5} padding={0.5}>
+        {filteredTools.map((tool) => {
+          const toolDisabled =
+            !tool.isAvailable ||
+            !getFieldMeta<boolean>(`${serverFieldName}.enabled`).value;
+          return (
+            <Disabled key={tool.id} disabled={toolDisabled}>
+              <Card border="solid" rounding="md" padding="sm">
+                <ContentAction
+                  icon={tool.icon ?? SvgSliders}
+                  title={tool.name}
+                  description={tool.description}
+                  sizePreset="main-ui"
+                  variant="section"
+                  padding="fit"
+                  rightChildren={
+                    <SwitchField
+                      name={`${serverFieldName}.tool_${tool.id}`}
+                      disabled={!isServerEnabled}
+                    />
+                  }
+                />
+              </Card>
+            </Disabled>
+          );
+        })}
+      </GeneralLayouts.Section>
+    );
+  }
+
   return (
-    <ExpandableCard.Root isFolded={isFolded} onFoldedChange={setIsFolded}>
-      <ActionsLayouts.Header
-        title={server.name}
-        description={server.description}
-        icon={getActionIcon(server.server_url, server.name)}
-        rightChildren={
-          <GeneralLayouts.Section
-            flexDirection="row"
-            gap={0.5}
-            alignItems="start"
-          >
-            <EnabledCount
-              enabledCount={enabledCount}
-              totalCount={enabledTools.length}
+    <Card
+      expandable
+      expanded={!isFolded}
+      border="solid"
+      rounding="lg"
+      padding="sm"
+      expandedContent={cardContent}
+    >
+      <CardLayout.Header
+        bottomChildren={
+          <GeneralLayouts.Section flexDirection="row" gap={0.5}>
+            <InputTypeIn
+              placeholder="Search tools..."
+              variant="internal"
+              searchIcon
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
             />
-            <SwitchField
-              name={`${serverFieldName}.enabled`}
-              onCheckedChange={(checked) => {
-                enabledTools.forEach((tool) => {
-                  setFieldValue(`${serverFieldName}.tool_${tool.id}`, checked);
-                });
-                if (!checked) return;
-                setIsFolded(false);
-              }}
-            />
+            {enabledTools.length > 0 && (
+              <Button
+                prominence="internal"
+                rightIcon={isFolded ? SvgExpand : SvgFold}
+                onClick={() => setIsFolded((prev) => !prev)}
+              >
+                {isFolded ? "Expand" : "Fold"}
+              </Button>
+            )}
           </GeneralLayouts.Section>
         }
       >
-        <GeneralLayouts.Section flexDirection="row" gap={0.5}>
-          <InputTypeIn
-            placeholder="Search tools..."
-            variant="internal"
-            leftSearchIcon
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+        <div className="p-2">
+          <ContentAction
+            icon={getActionIcon(server.server_url, server.name)}
+            title={server.name}
+            description={server.description}
+            sizePreset="main-ui"
+            variant="section"
+            padding="fit"
+            rightChildren={
+              <GeneralLayouts.Section
+                flexDirection="row"
+                gap={0.5}
+                alignItems="start"
+              >
+                <EnabledCount
+                  enabledCount={enabledCount}
+                  totalCount={enabledTools.length}
+                />
+                <SwitchField
+                  name={`${serverFieldName}.enabled`}
+                  onCheckedChange={(checked) => {
+                    enabledTools.forEach((tool) => {
+                      setFieldValue(
+                        `${serverFieldName}.tool_${tool.id}`,
+                        checked
+                      );
+                    });
+                    if (!checked) return;
+                    setIsFolded(false);
+                  }}
+                />
+              </GeneralLayouts.Section>
+            }
           />
-          {enabledTools.length > 0 && (
-            <OpalButton
-              prominence="internal"
-              rightIcon={isFolded ? SvgExpand : SvgFold}
-              onClick={() => setIsFolded((prev) => !prev)}
-            >
-              {isFolded ? "Expand" : "Fold"}
-            </OpalButton>
-          )}
-        </GeneralLayouts.Section>
-      </ActionsLayouts.Header>
-      {isLoading ? (
-        <ActionsLayouts.Content>
-          <GeneralLayouts.Section padding={1}>
-            <SimpleLoader />
-          </GeneralLayouts.Section>
-        </ActionsLayouts.Content>
-      ) : (
-        enabledTools.length > 0 &&
-        filteredTools.length > 0 && (
-          <ActionsLayouts.Content>
-            {filteredTools.map((tool) => (
-              <ActionsLayouts.Tool
-                key={tool.id}
-                name={`${serverFieldName}.tool_${tool.id}`}
-                title={tool.name}
-                description={tool.description}
-                icon={tool.icon ?? SvgSliders}
-                disabled={
-                  !tool.isAvailable ||
-                  !getFieldMeta<boolean>(`${serverFieldName}.enabled`).value
-                }
-                rightChildren={
-                  <SwitchField
-                    name={`${serverFieldName}.tool_${tool.id}`}
-                    disabled={!isServerEnabled}
-                  />
-                }
-              />
-            ))}
-          </ActionsLayouts.Content>
-        )
-      )}
-    </ExpandableCard.Root>
+        </div>
+      </CardLayout.Header>
+    </Card>
   );
 }
 
-function StarterMessages() {
+function AgentStarterMessages() {
   const max_starters = STARTER_MESSAGES_EXAMPLES.length;
 
   const { values } = useFormikContext<{
@@ -442,7 +476,7 @@ function StarterMessages() {
 }
 
 export interface AgentEditorPageProps {
-  agent?: FullPersona;
+  agent?: FullAgent;
   refreshAgent?: () => void;
 }
 
@@ -458,41 +492,7 @@ export default function AgentEditorPage({
   const { isAdmin, isCurator } = useUser();
   const canUpdateFeaturedStatus = isAdmin || isCurator;
   const vectorDbEnabled = useVectorDbEnabled();
-  const isPaidEnterpriseFeaturesEnabled = usePaidEnterpriseFeaturesEnabled();
-
-  // LLM Model Selection
-  const getCurrentLlm = useCallback(
-    (values: any, llmProviders: any) =>
-      values.llm_model_version_override && values.llm_model_provider_override
-        ? (() => {
-            const provider = llmProviders?.find(
-              (p: any) => p.name === values.llm_model_provider_override
-            );
-            return structureValue(
-              values.llm_model_provider_override,
-              provider?.provider || "",
-              values.llm_model_version_override
-            );
-          })()
-        : null,
-    []
-  );
-
-  const onLlmSelect = useCallback(
-    (selected: string | null, setFieldValue: any) => {
-      if (selected === null) {
-        setFieldValue("llm_model_version_override", null);
-        setFieldValue("llm_model_provider_override", null);
-      } else {
-        const { modelName, name } = parseLlmDescriptor(selected);
-        if (modelName && name) {
-          setFieldValue("llm_model_version_override", modelName);
-          setFieldValue("llm_model_provider_override", name);
-        }
-      }
-    },
-    []
-  );
+  const businessTier = useTierAtLeast(Tier.BUSINESS);
 
   // Hooks for Knowledge section
   const { allRecentFiles, beginUpload } = useProjectsContext();
@@ -507,6 +507,48 @@ export default function AgentEditorPage({
   const { openApiTools: openApiToolsRaw, isLoading: isOpenApiLoading } =
     useOpenApiTools();
   const { llmProviders } = useLLMProviders(existingAgent?.id);
+
+  // LLM Model Selection — placed after llmProviders so the callbacks can close over it
+  const getCurrentLlm = useCallback((values: any, providers: any) => {
+    // Canonical path: resolve from model configuration ID.
+    if (values.default_model_configuration_id != null) {
+      for (const p of providers ?? []) {
+        const mc = p.model_configurations?.find(
+          (m: any) => m.id === values.default_model_configuration_id
+        );
+        if (mc) {
+          return structureValue(p.name ?? String(p.id), p.provider, mc.name);
+        }
+      }
+    }
+    return null;
+  }, []);
+
+  const onLlmSelect = useCallback(
+    (selected: string | null, setFieldValue: any) => {
+      if (selected === null) {
+        setFieldValue("default_model_configuration_id", null);
+      } else {
+        const { modelName, name } = parseLlmDescriptor(selected);
+        if (modelName) {
+          // `name` is either the display name or String(provider.id) for nameless
+          // providers, so we match by both.
+          const provider = llmProviders?.find(
+            (p: any) => p.name === name || String(p.id) === name
+          );
+          const modelConfig = provider?.model_configurations?.find(
+            (mc: any) => mc.name === modelName
+          );
+          setFieldValue(
+            "default_model_configuration_id",
+            modelConfig?.id ?? null
+          );
+        }
+      }
+    },
+    [llmProviders]
+  );
+
   const mcpServers = mcpData?.mcp_servers ?? [];
   const openApiTools = openApiToolsRaw ?? [];
 
@@ -531,6 +573,9 @@ export default function AgentEditorPage({
   );
   const codeInterpreterTool = availableTools?.find(
     (t) => t.in_code_tool_id === PYTHON_TOOL_ID
+  );
+  const codingAgentTool = availableTools?.find(
+    (t) => t.in_code_tool_id === CODING_AGENT_TOOL_ID
   );
   const isImageGenerationAvailable = !!imageGenTool;
   const imageGenerationDisabledTooltip = isImageGenerationAvailable
@@ -568,8 +613,13 @@ export default function AgentEditorPage({
       (_, i) => existingAgent?.starter_messages?.[i]?.message ?? ""
     ),
 
-    // Knowledge - enabled if agent has any knowledge sources attached
+    // Knowledge - enabled if the agent has the internal search tool attached
+    // or any knowledge sources attached.
     enable_knowledge:
+      (existingAgent?.tools?.some(
+        (tool) => tool.in_code_tool_id === SEARCH_TOOL_ID
+      ) ??
+        false) ||
       (existingAgent?.document_sets?.length ?? 0) > 0 ||
       (existingAgent?.hierarchy_nodes?.length ?? 0) > 0 ||
       (existingAgent?.attached_documents?.length ?? 0) > 0 ||
@@ -585,10 +635,8 @@ export default function AgentEditorPage({
     selected_sources: [] as ValidSources[],
 
     // Advanced
-    llm_model_provider_override:
-      existingAgent?.llm_model_provider_override ?? null,
-    llm_model_version_override:
-      existingAgent?.llm_model_version_override ?? null,
+    default_model_configuration_id:
+      existingAgent?.default_model_configuration_id ?? null,
     knowledge_cutoff_date: existingAgent?.search_start_date
       ? new Date(existingAgent.search_start_date)
       : null,
@@ -620,6 +668,12 @@ export default function AgentEditorPage({
       !!codeInterpreterTool &&
       (existingAgent?.tools?.some(
         (tool) => tool.in_code_tool_id === PYTHON_TOOL_ID
+      ) ??
+        false),
+    coding_agent:
+      !!codingAgentTool &&
+      (existingAgent?.tools?.some(
+        (tool) => tool.in_code_tool_id === CODING_AGENT_TOOL_ID
       ) ??
         false),
     // MCP servers - dynamically add fields for each server with nested tool fields
@@ -697,9 +751,15 @@ export default function AgentEditorPage({
     selected_sources: Yup.array().of(Yup.string()),
 
     // Advanced
-    llm_model_provider_override: Yup.string().nullable().optional(),
-    llm_model_version_override: Yup.string().nullable().optional(),
-    knowledge_cutoff_date: Yup.date().nullable().optional(),
+    default_model_configuration_id: Yup.number().nullable().optional(),
+    knowledge_cutoff_date: Yup.date()
+      .nullable()
+      .optional()
+      .test(
+        "knowledge-cutoff-date-not-in-future",
+        "Knowledge cutoff date must be today or earlier.",
+        (value) => !value || !isDateInFuture(value)
+      ),
     replace_base_system_prompt: Yup.boolean(),
     reminders: Yup.string().optional(),
 
@@ -731,7 +791,7 @@ export default function AgentEditorPage({
         }));
 
       // Send null instead of empty array if no starter messages
-      const finalStarterMessages =
+      const finalAgentStarterMessages =
         starterMessages.length > 0 ? starterMessages : null;
 
       // Always look up tools in availableTools to ensure we can find all tools
@@ -753,6 +813,9 @@ export default function AgentEditorPage({
       }
       if (values.code_interpreter && codeInterpreterTool) {
         toolIds.push(codeInterpreterTool.id);
+      }
+      if (values.coding_agent && codingAgentTool) {
+        toolIds.push(codingAgentTool.id);
       }
 
       // Collect enabled MCP tool IDs
@@ -787,16 +850,16 @@ export default function AgentEditorPage({
       });
 
       // Build submission data
-      const submissionData: PersonaUpsertParameters = {
+      const submissionData: AgentUpsertParameters = {
         name: values.name,
         description: values.description,
         document_set_ids: values.enable_knowledge
           ? values.document_set_ids
           : [],
         is_public: values.is_public,
-        llm_model_provider_override: values.llm_model_provider_override || null,
-        llm_model_version_override: values.llm_model_version_override || null,
-        starter_messages: finalStarterMessages,
+        default_model_configuration_id:
+          (values as any).default_model_configuration_id ?? null,
+        starter_messages: finalAgentStarterMessages,
         users: values.shared_user_ids,
         groups: values.shared_group_ids,
         tool_ids: toolIds,
@@ -823,10 +886,10 @@ export default function AgentEditorPage({
 
       // Call API
       let personaResponse;
-      if (!!existingAgent) {
-        personaResponse = await updatePersona(existingAgent.id, submissionData);
+      if (existingAgent) {
+        personaResponse = await updateAgent(existingAgent.id, submissionData);
       } else {
-        personaResponse = await createPersona(submissionData);
+        personaResponse = await createAgent(submissionData);
       }
 
       // Handle response
@@ -866,16 +929,19 @@ export default function AgentEditorPage({
   async function handleDeleteAgent() {
     if (!existingAgent) return;
 
-    const error = await deleteAgent(existingAgent.id);
-
-    if (error) {
-      toast.error(`Failed to delete agent: ${error}`);
-    } else {
+    try {
+      await deleteAgent(existingAgent.id);
       toast.success("Agent deleted successfully");
-
       deleteAgentModal.toggle(false);
       await refreshAgents();
       router.push("/app/agents");
+    } catch (e) {
+      console.error("Delete agent error:", e);
+      toast.error(
+        `Failed to delete agent: ${
+          e instanceof Error ? e.message : "Unknown error"
+        }`
+      );
     }
   }
 
@@ -1108,7 +1174,7 @@ export default function AgentEditorPage({
                           userIds,
                           groupIds,
                           isPublic,
-                          isPaidEnterpriseFeaturesEnabled,
+                          businessTier,
                           labelIds
                         );
                       } catch (error) {
@@ -1175,12 +1241,9 @@ export default function AgentEditorPage({
                       icon={SvgTrash}
                       title="Delete Agent"
                       submit={
-                        <OpalButton
-                          variant="danger"
-                          onClick={handleDeleteAgent}
-                        >
+                        <Button variant="danger" onClick={handleDeleteAgent}>
                           Delete Agent
-                        </OpalButton>
+                        </Button>
                       }
                       onClose={() => deleteAgentModal.toggle(false)}
                     >
@@ -1202,14 +1265,14 @@ export default function AgentEditorPage({
                       title={existingAgent ? "Edit Agent" : "Create Agent"}
                       rightChildren={
                         <div className="flex gap-2">
-                          <OpalButton
+                          <Button
                             prominence="secondary"
                             type="button"
                             onClick={() => router.back()}
                           >
                             Cancel
-                          </OpalButton>
-                          <SimpleTooltip
+                          </Button>
+                          <Tooltip
                             tooltip={
                               isSubmitting
                                 ? "Saving changes..."
@@ -1223,23 +1286,22 @@ export default function AgentEditorPage({
                             }
                             side="bottom"
                           >
-                            <Disabled
+                            <Button
                               disabled={
                                 isSubmitting ||
                                 !isValid ||
                                 !dirty ||
                                 hasUploadingFiles
                               }
+                              type="submit"
                             >
-                              <OpalButton type="submit">
-                                {existingAgent ? "Save" : "Create"}
-                              </OpalButton>
-                            </Disabled>
-                          </SimpleTooltip>
+                              {existingAgent ? "Save" : "Create"}
+                            </Button>
+                          </Tooltip>
                         </div>
                       }
                       backButton
-                      separator
+                      divider
                     />
 
                     {/* Agent Form Content */}
@@ -1250,61 +1312,67 @@ export default function AgentEditorPage({
                         alignItems="start"
                       >
                         <GeneralLayouts.Section>
-                          <InputLayouts.Vertical name="name" title="Name">
+                          <InputVertical withLabel="name" title="Name">
                             <InputTypeInField
                               name="name"
                               placeholder="Name your agent"
                             />
-                          </InputLayouts.Vertical>
+                          </InputVertical>
 
-                          <InputLayouts.Vertical
-                            name="description"
+                          <InputVertical
+                            withLabel="description"
                             title="Description"
-                            optional
+                            suffix="optional"
                           >
                             <InputTextAreaField
                               name="description"
                               placeholder="What does this agent do?"
                             />
-                          </InputLayouts.Vertical>
+                          </InputVertical>
                         </GeneralLayouts.Section>
 
                         <GeneralLayouts.Section width="fit">
-                          <InputLayouts.Vertical
-                            name="agent_avatar"
+                          <InputVertical
+                            withLabel="agent_avatar"
                             title="Agent Avatar"
                           >
                             <AgentIconEditor existingAgent={existingAgent} />
-                          </InputLayouts.Vertical>
+                          </InputVertical>
                         </GeneralLayouts.Section>
                       </GeneralLayouts.Section>
 
-                      <Separator noPadding />
+                      <Divider
+                        paddingParallel="fit"
+                        paddingPerpendicular="fit"
+                      />
 
                       <GeneralLayouts.Section>
-                        <InputLayouts.Vertical
-                          name="instructions"
+                        <InputVertical
+                          withLabel="instructions"
                           title="Instructions"
-                          optional
+                          suffix="optional"
                           description="Add instructions to tailor the response for this agent."
                         >
                           <InputTextAreaField
                             name="instructions"
                             placeholder="Think step by step and show reasoning for complex problems. Use specific examples. Emphasize action items, and leave blanks for the human to fill in when you have unknown. Use a polite enthusiastic tone."
                           />
-                        </InputLayouts.Vertical>
+                        </InputVertical>
 
-                        <InputLayouts.Vertical
-                          name="starter_messages"
+                        <InputVertical
+                          withLabel="starter_messages"
                           title="Conversation Starters"
                           description="Example messages that help users understand what this agent can do and how to interact with it effectively."
-                          optional
+                          suffix="optional"
                         >
-                          <StarterMessages />
-                        </InputLayouts.Vertical>
+                          <AgentStarterMessages />
+                        </InputVertical>
                       </GeneralLayouts.Section>
 
-                      <Separator noPadding />
+                      <Divider
+                        paddingParallel="fit"
+                        paddingPerpendicular="fit"
+                      />
 
                       <AgentKnowledgePane
                         enableKnowledge={values.enable_knowledge}
@@ -1349,7 +1417,10 @@ export default function AgentEditorPage({
                         vectorDbEnabled={vectorDbEnabled}
                       />
 
-                      <Separator noPadding />
+                      <Divider
+                        paddingParallel="fit"
+                        paddingPerpendicular="fit"
+                      />
 
                       <SimpleCollapsible>
                         <SimpleCollapsible.Header
@@ -1358,19 +1429,13 @@ export default function AgentEditorPage({
                         />
                         <SimpleCollapsible.Content>
                           <GeneralLayouts.Section gap={0.5}>
-                            <SimpleTooltip
+                            <Disabled
+                              disabled={!isImageGenerationAvailable}
                               tooltip={imageGenerationDisabledTooltip}
-                              side="top"
                             >
-                              <Card
-                                variant={
-                                  isImageGenerationAvailable
-                                    ? undefined
-                                    : "disabled"
-                                }
-                              >
-                                <InputLayouts.Horizontal
-                                  name="image_generation"
+                              <Card border="solid" rounding="lg">
+                                <InputHorizontal
+                                  withLabel="image_generation"
                                   title="Image Generation"
                                   description="Generate and manipulate images using AI-powered tools."
                                   disabled={!isImageGenerationAvailable}
@@ -1379,66 +1444,83 @@ export default function AgentEditorPage({
                                     name="image_generation"
                                     disabled={!isImageGenerationAvailable}
                                   />
-                                </InputLayouts.Horizontal>
+                                </InputHorizontal>
                               </Card>
-                            </SimpleTooltip>
+                            </Disabled>
 
-                            <Card
-                              variant={!!webSearchTool ? undefined : "disabled"}
-                            >
-                              <InputLayouts.Horizontal
-                                name="web_search"
-                                title="Web Search"
-                                description="Search the web for real-time information and up-to-date results."
-                                disabled={!webSearchTool}
-                              >
-                                <SwitchField
-                                  name="web_search"
+                            <Disabled disabled={!webSearchTool}>
+                              <Card border="solid" rounding="lg">
+                                <InputHorizontal
+                                  withLabel="web_search"
+                                  title="Web Search"
+                                  description="Search the web for real-time information and up-to-date results."
                                   disabled={!webSearchTool}
-                                />
-                              </InputLayouts.Horizontal>
-                            </Card>
+                                >
+                                  <SwitchField
+                                    name="web_search"
+                                    disabled={!webSearchTool}
+                                  />
+                                </InputHorizontal>
+                              </Card>
+                            </Disabled>
 
-                            <Card
-                              variant={!!openURLTool ? undefined : "disabled"}
-                            >
-                              <InputLayouts.Horizontal
-                                name="open_url"
-                                title="Open URL"
-                                description="Fetch and read content from web URLs."
-                                disabled={!openURLTool}
-                              >
-                                <SwitchField
-                                  name="open_url"
+                            <Disabled disabled={!openURLTool}>
+                              <Card border="solid" rounding="lg">
+                                <InputHorizontal
+                                  withLabel="open_url"
+                                  title="Open URL"
+                                  description="Fetch and read content from web URLs."
                                   disabled={!openURLTool}
-                                />
-                              </InputLayouts.Horizontal>
-                            </Card>
+                                >
+                                  <SwitchField
+                                    name="open_url"
+                                    disabled={!openURLTool}
+                                  />
+                                </InputHorizontal>
+                              </Card>
+                            </Disabled>
 
-                            <Card
-                              variant={
-                                !!codeInterpreterTool ? undefined : "disabled"
-                              }
-                            >
-                              <InputLayouts.Horizontal
-                                name="code_interpreter"
-                                title="Code Interpreter"
-                                description="Generate and run code."
-                                disabled={!codeInterpreterTool}
-                              >
-                                <SwitchField
-                                  name="code_interpreter"
+                            <Disabled disabled={!codeInterpreterTool}>
+                              <Card border="solid" rounding="lg">
+                                <InputHorizontal
+                                  withLabel="code_interpreter"
+                                  title="Code Interpreter"
+                                  description="Generate and run code."
                                   disabled={!codeInterpreterTool}
-                                />
-                              </InputLayouts.Horizontal>
-                            </Card>
+                                >
+                                  <SwitchField
+                                    name="code_interpreter"
+                                    disabled={!codeInterpreterTool}
+                                  />
+                                </InputHorizontal>
+                              </Card>
+                            </Disabled>
+
+                            <Disabled disabled={!codingAgentTool}>
+                              <Card border="solid" rounding="lg">
+                                <InputHorizontal
+                                  withLabel="coding_agent"
+                                  title="Coding Agent"
+                                  description="Investigate a GitHub repository and answer questions about its code."
+                                  disabled={!codingAgentTool}
+                                >
+                                  <SwitchField
+                                    name="coding_agent"
+                                    disabled={!codingAgentTool}
+                                  />
+                                </InputHorizontal>
+                              </Card>
+                            </Disabled>
 
                             {/* Tools */}
                             <>
-                              {/* render the separator if there is at least one mcp-server or open-api-tool */}
+                              {/* render the divider if there is at least one mcp-server or open-api-tool */}
                               {(mcpServers.length > 0 ||
                                 openApiTools.length > 0) && (
-                                <Separator noPadding className="py-1" />
+                                <Divider
+                                  paddingPerpendicular="xs"
+                                  paddingParallel="fit"
+                                />
                               )}
 
                               {/* MCP tools */}
@@ -1473,7 +1555,10 @@ export default function AgentEditorPage({
                         </SimpleCollapsible.Content>
                       </SimpleCollapsible>
 
-                      <Separator noPadding />
+                      <Divider
+                        paddingParallel="fit"
+                        paddingPerpendicular="fit"
+                      />
 
                       <SimpleCollapsible>
                         <SimpleCollapsible.Header
@@ -1482,85 +1567,90 @@ export default function AgentEditorPage({
                         />
                         <SimpleCollapsible.Content>
                           <GeneralLayouts.Section>
-                            <Card>
-                              <InputLayouts.Horizontal
-                                title="Share This Agent"
-                                description="with other users, groups, or everyone in your organization."
-                                center
-                              >
-                                <OpalButton
-                                  prominence="secondary"
-                                  icon={isShared ? SvgUsers : SvgLock}
-                                  onClick={() => shareAgentModal.toggle(true)}
+                            <Card border="solid" rounding="lg">
+                              <GeneralLayouts.Section>
+                                <InputHorizontal
+                                  title="Share This Agent"
+                                  description="with other users, groups, or everyone in your organization."
+                                  center
                                 >
-                                  Share
-                                </OpalButton>
-                              </InputLayouts.Horizontal>
-                              {canUpdateFeaturedStatus && (
-                                <>
-                                  <InputLayouts.Horizontal
-                                    name="is_featured"
-                                    title="Feature This Agent"
-                                    description="Show this agent at the top of the explore agents list and automatically pin it to the sidebar for new users with access."
+                                  <Button
+                                    prominence="secondary"
+                                    icon={isShared ? SvgUsers : SvgLock}
+                                    onClick={() => shareAgentModal.toggle(true)}
                                   >
-                                    <SwitchField name="is_featured" />
-                                  </InputLayouts.Horizontal>
-                                  {values.is_featured && !isShared && (
-                                    <Message
-                                      static
-                                      close={false}
-                                      className="w-full"
-                                      text="This agent is private to you and will only be featured for yourself."
-                                    />
-                                  )}
-                                </>
-                              )}
+                                    Share
+                                  </Button>
+                                </InputHorizontal>
+                                {canUpdateFeaturedStatus && (
+                                  <>
+                                    <InputHorizontal
+                                      withLabel="is_featured"
+                                      title="Feature This Agent"
+                                      description="Show this agent at the top of the explore agents list and automatically pin it to the sidebar for new users with access."
+                                    >
+                                      <SwitchField name="is_featured" />
+                                    </InputHorizontal>
+                                    {values.is_featured && !isShared && (
+                                      <MessageCard title="This agent is private to you and will only be featured for yourself." />
+                                    )}
+                                  </>
+                                )}
+                              </GeneralLayouts.Section>
                             </Card>
 
-                            <Card>
-                              <InputLayouts.Horizontal
-                                name="llm_model"
-                                title="Default Model"
-                                description="Select the LLM model to use for this agent. If not set, the user's default model will be used."
-                              >
-                                <LLMSelector
-                                  name="llm_model"
-                                  llmProviders={llmProviders ?? []}
-                                  currentLlm={getCurrentLlm(
-                                    values,
-                                    llmProviders
-                                  )}
-                                  onSelect={(selected) =>
-                                    onLlmSelect(selected, setFieldValue)
-                                  }
-                                />
-                              </InputLayouts.Horizontal>
-                              <InputLayouts.Horizontal
-                                name="knowledge_cutoff_date"
-                                title="Knowledge Cutoff Date"
-                                description="Set the knowledge cutoff date for this agent. The agent will only use information up to this date."
-                              >
-                                <InputDatePickerField name="knowledge_cutoff_date" />
-                              </InputLayouts.Horizontal>
-                              <InputLayouts.Horizontal
-                                name="replace_base_system_prompt"
-                                title="Overwrite System Prompt"
-                                description='Completely replace the base system prompt. This might affect response quality since it will also overwrite useful system instructions (e.g. "You (the LLM) can provide markdown and it will be rendered").'
-                              >
-                                <SwitchField name="replace_base_system_prompt" />
-                              </InputLayouts.Horizontal>
+                            <Card border="solid" rounding="lg">
+                              <GeneralLayouts.Section>
+                                <InputHorizontal
+                                  withLabel="llm_model"
+                                  title="Default Model"
+                                  description="This model will be used by Onyx by default in your chats."
+                                >
+                                  <LLMSelector
+                                    name="llm_model"
+                                    llmProviders={llmProviders ?? []}
+                                    currentLlm={getCurrentLlm(
+                                      values,
+                                      llmProviders
+                                    )}
+                                    onSelect={(selected) =>
+                                      onLlmSelect(selected, setFieldValue)
+                                    }
+                                  />
+                                </InputHorizontal>
+                                <InputHorizontal
+                                  withLabel="knowledge_cutoff_date"
+                                  title="Knowledge Cutoff Date"
+                                  suffix="optional"
+                                  description="Documents with a last-updated date prior to this will be ignored."
+                                >
+                                  <InputDatePickerField
+                                    name="knowledge_cutoff_date"
+                                    maxDate={new Date()}
+                                  />
+                                </InputHorizontal>
+                                <InputHorizontal
+                                  withLabel="replace_base_system_prompt"
+                                  title="Overwrite System Prompt"
+                                  suffix="(Not Recommended)"
+                                  description='Remove the base system prompt which includes useful instructions (e.g. "You can use Markdown tables"). This may affect response quality.'
+                                >
+                                  <SwitchField name="replace_base_system_prompt" />
+                                </InputHorizontal>
+                              </GeneralLayouts.Section>
                             </Card>
 
                             <GeneralLayouts.Section gap={0.25}>
-                              <InputLayouts.Vertical
-                                name="reminders"
+                              <InputVertical
+                                withLabel="reminders"
                                 title="Reminders"
+                                suffix="optional"
                               >
                                 <InputTextAreaField
                                   name="reminders"
                                   placeholder="Remember, I want you to always format your response as a numbered list."
                                 />
-                              </InputLayouts.Vertical>
+                              </InputVertical>
                               <Text text03 secondaryBody>
                                 Append a brief reminder to the prompt messages.
                                 Use this to remind the agent if you find that it
@@ -1575,22 +1665,25 @@ export default function AgentEditorPage({
 
                       {existingAgent && (
                         <>
-                          <Separator noPadding />
+                          <Divider
+                            paddingParallel="fit"
+                            paddingPerpendicular="fit"
+                          />
 
-                          <Card>
-                            <InputLayouts.Horizontal
+                          <Card border="solid" rounding="lg">
+                            <InputHorizontal
                               title="Delete This Agent"
                               description="Anyone using this agent will no longer be able to access it."
                               center
                             >
-                              <OpalButton
+                              <Button
                                 variant="danger"
                                 prominence="secondary"
                                 onClick={() => deleteAgentModal.toggle(true)}
                               >
                                 Delete Agent
-                              </OpalButton>
-                            </InputLayouts.Horizontal>
+                              </Button>
+                            </InputHorizontal>
                           </Card>
                         </>
                       )}

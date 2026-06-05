@@ -212,7 +212,7 @@ class TestUpsertVoiceProvider:
         self, mock_db_session: MagicMock
     ) -> None:
         existing_provider = _make_voice_provider(id=1)
-        existing_provider.api_key = "original-key"  # type: ignore[assignment]
+        existing_provider.api_key = "original-key"  # ty: ignore[invalid-assignment]
         original_api_key = existing_provider.api_key
         mock_db_session.scalar.return_value = existing_provider
         mock_db_session.flush.return_value = None
@@ -272,13 +272,13 @@ class TestUpsertVoiceProvider:
 class TestDeleteVoiceProvider:
     """Tests for delete_voice_provider."""
 
-    def test_soft_deletes_provider_when_found(self, mock_db_session: MagicMock) -> None:
+    def test_hard_deletes_provider_when_found(self, mock_db_session: MagicMock) -> None:
         provider = _make_voice_provider(id=1)
         mock_db_session.scalar.return_value = provider
 
         delete_voice_provider(mock_db_session, 1)
 
-        assert provider.deleted is True
+        mock_db_session.delete.assert_called_once_with(provider)
         mock_db_session.flush.assert_called_once()
 
     def test_does_nothing_when_provider_not_found(
@@ -502,6 +502,6 @@ class TestSpeedClampingLogic:
             clamped = max(
                 MIN_VOICE_PLAYBACK_SPEED, min(MAX_VOICE_PLAYBACK_SPEED, speed)
             )
-            assert (
-                clamped == expected
-            ), f"speed={speed} expected={expected} got={clamped}"
+            assert clamped == expected, (
+                f"speed={speed} expected={expected} got={clamped}"
+            )

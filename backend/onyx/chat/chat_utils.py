@@ -5,6 +5,7 @@ from typing import cast
 from uuid import UUID
 
 from fastapi.datastructures import Headers
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from onyx.chat.models import ChatHistoryResult
@@ -13,8 +14,11 @@ from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import FileToolMetadata
 from onyx.chat.models import ToolCallSimple
 from onyx.configs.constants import DEFAULT_PERSONA_ID
+from onyx.configs.constants import FileOrigin
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import TMP_DRALPHA_PERSONA_NAME
+from onyx.context.search.models import SearchDoc
+from onyx.context.search.utils import sandbox_filename_for_document
 from onyx.db.chat import create_chat_session
 from onyx.db.chat import get_chat_messages_by_session
 from onyx.db.chat import get_or_create_root_message
@@ -24,7 +28,9 @@ from onyx.db.models import ChatMessage
 from onyx.db.models import ChatSession
 from onyx.db.models import Persona
 from onyx.db.models import SearchDoc as DbSearchDoc
+from onyx.db.models import User
 from onyx.db.models import UserFile
+from onyx.db.persona import user_can_access_persona
 from onyx.db.projects import check_project_ownership
 from onyx.file_processing.extract_file_text import extract_file_text
 from onyx.file_store.file_store import get_default_file_store
@@ -41,46 +47,113 @@ from onyx.prompts.chat_prompts import TOOL_CALL_RESPONSE_CROSS_MESSAGE
 from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
 from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.streaming_models import CitationInfo
+from onyx.tools.models import ChatFile
 from onyx.tools.models import ToolCallKickoff
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 from onyx.utils.timing import log_function_time
 
-
 logger = setup_logger()
 IMAGE_GENERATION_TOOL_NAME = "generate_image"
 
 
+class FileContextResult(BaseModel):
+    """Result of building a file's LLM context representation."""
+
+    message: ChatMessageSimple
+    tool_metadata: FileToolMetadata
+
+
+def build_file_context(
+    tool_file_id: str,
+    filename: str,
+    file_type: ChatFileType,
+    content_text: str | None = None,
+    token_count: int = 0,
+    approx_char_count: int | None = None,
+) -> FileContextResult:
+    """Build the LLM context representation for a single file.
+
+    Centralises how files should appear in the LLM prompt
+    — the ID that FileReaderTool accepts (``UserFile.id`` for user files).
+    """
+    if file_type.use_metadata_only():
+        message_text = (
+            f"File: {filename} (id={tool_file_id})\n"
+            "Use the file_reader or python tools to access "
+            "this file's contents."
+        )
+        message = ChatMessageSimple(
+            message=message_text,
+            token_count=max(1, len(message_text) // 4),
+            message_type=MessageType.USER,
+            file_id=tool_file_id,
+        )
+    else:
+        message_text = f"File: {filename}\n{content_text or ''}\nEnd of File"
+        message = ChatMessageSimple(
+            message=message_text,
+            token_count=token_count,
+            message_type=MessageType.USER,
+            file_id=tool_file_id,
+        )
+
+    metadata = FileToolMetadata(
+        file_id=tool_file_id,
+        filename=filename,
+        approx_char_count=(
+            approx_char_count
+            if approx_char_count is not None
+            else len(content_text or "")
+        ),
+    )
+
+    return FileContextResult(message=message, tool_metadata=metadata)
+
+
 def create_chat_session_from_request(
     chat_session_request: ChatSessionCreationRequest,
-    user_id: UUID | None,
+    user: User,
     db_session: Session,
 ) -> ChatSession:
     """Create a chat session from a ChatSessionCreationRequest.
 
-    Includes project ownership validation when project_id is provided.
+    Includes project ownership and persona access validation.
 
     Args:
         chat_session_request: The request containing persona_id, description, and project_id
-        user_id: The ID of the user creating the session (can be None for anonymous)
+        user: The user creating the session. Anonymous users are represented as a
+            User with is_anonymous=True (never None); the access-check helpers
+            handle that case. A real User is required so the persona access check
+            always runs — do not introduce a None-tolerant caller.
         db_session: The database session
 
     Returns:
         The newly created ChatSession
 
     Raises:
-        ValueError: If user lacks access to the specified project
+        ValueError: If user lacks access to the specified project or persona
         Exception: If the persona is invalid
     """
     project_id = chat_session_request.project_id
     if project_id:
-        if not check_project_ownership(project_id, user_id, db_session):
+        if not check_project_ownership(project_id, user.id, db_session):
             raise ValueError("User does not have access to project")
+
+    persona_id = chat_session_request.persona_id
+    if persona_id != DEFAULT_PERSONA_ID:
+        if not user_can_access_persona(
+            db_session=db_session,
+            persona_id=persona_id,
+            user=user,
+            get_editable=False,
+        ):
+            raise ValueError("User does not have access to persona")
 
     return create_chat_session(
         db_session=db_session,
         description=chat_session_request.description or "",
-        user_id=user_id,
+        user_id=user.id,
         persona_id=chat_session_request.persona_id,
         project_id=chat_session_request.project_id,
     )
@@ -90,6 +163,7 @@ def create_chat_history_chain(
     chat_session_id: UUID,
     db_session: Session,
     prefetch_top_two_level_tool_calls: bool = True,
+    prefetch_message_details: bool = False,
     # Optional id at which we finish processing
     stop_at_message_id: int | None = None,
 ) -> list[ChatMessage]:
@@ -102,6 +176,7 @@ def create_chat_history_chain(
         db_session=db_session,
         skip_permission_check=True,
         prefetch_top_two_level_tool_calls=prefetch_top_two_level_tool_calls,
+        prefetch_message_details=prefetch_message_details,
     )
 
     if not all_chat_messages:
@@ -309,12 +384,17 @@ def _get_or_extract_plaintext(
         plaintext_io = file_store.read_file(plaintext_key, mode="b")
         return plaintext_io.read().decode("utf-8")
     except Exception:
-        logger.exception(f"Error when reading file, id={file_id}")
+        logger.info("Cache miss for file with id=%s", file_id)
 
-    # Cache miss — extract and store.
+    # Cache miss — extract and store.  We cache the result unconditionally
+    # (including the empty string) so that files we cannot extract text from
+    # (e.g. .zip, or any extension without a handler in extract_file_text)
+    # don't get re-fetched from object storage and re-attempted on every
+    # subsequent chat turn.  Transient extraction errors surface as raised
+    # exceptions, not empty returns, so they propagate without poisoning the
+    # cache.
     content_text = extract_fn()
-    if content_text:
-        store_plaintext(file_id, content_text)
+    store_plaintext(file_id, content_text)
     return content_text
 
 
@@ -322,22 +402,38 @@ def _get_or_extract_plaintext(
 def load_chat_file(
     file_descriptor: FileDescriptor, db_session: Session
 ) -> ChatLoadedFile:
-    file_io = get_default_file_store().read_file(file_descriptor["id"], mode="b")
-    content = file_io.read()
+    """Build a ChatLoadedFile whose raw ``content`` bytes are loaded lazily.
 
-    # Extract text content if it's a text file type (not an image)
-    content_text = None
+    Chat sessions accumulate hundreds of files over time, and a new message
+    sent in such a session previously triggered an unbounded parallel fan-out
+    of full-bytes-into-memory reads, the vast majority of which were
+    immediately discarded by chat-history truncation. We now defer the raw
+    bytes read until something downstream actually accesses ``.content`` —
+    typically only a handful of files survive truncation per turn.
+
+    ``content_text`` (used for LLM context injection) and ``token_count``
+    remain eager because they're cheap: the cached-plaintext store hit avoids
+    reading the original bytes entirely on the common path, and token_count
+    is a single DB lookup.
+    """
+    file_id = file_descriptor["id"]
     # `FileDescriptor` is often JSON-roundtripped (e.g. JSONB / API), so `type`
     # may arrive as a raw string value instead of a `ChatFileType`.
     file_type = ChatFileType(file_descriptor["type"])
+    filename = file_descriptor.get("name")
 
+    # Extract text content if it's a text file type (not an image). The
+    # cached-plaintext path avoids reading the original bytes on the steady
+    # state; only the cache miss branch opens the binary stream.
+    content_text: str | None = None
     if file_type.is_text_file():
-        file_id = file_descriptor["id"]
 
         def _extract() -> str:
+            # Only invoked on cache miss; bytes-read happens here, not upfront.
+            file_io = get_default_file_store().read_file(file_id, mode="b")
             return extract_file_text(
                 file=file_io,
-                file_name=file_descriptor.get("name") or "",
+                file_name=filename or "",
                 break_on_unprocessable=False,
             )
 
@@ -351,7 +447,9 @@ def load_chat_file(
             content_text = _get_or_extract_plaintext(cache_key, _extract)
         except Exception as e:
             logger.warning(
-                f"Failed to retrieve content for file {file_descriptor['id']}: {str(e)}"
+                "Failed to retrieve content for file %s: %s",
+                file_id,
+                str(e),
             )
 
     # Get token count from UserFile if available
@@ -366,25 +464,32 @@ def load_chat_file(
             if user_file and user_file.token_count:
                 token_count = user_file.token_count
         except (ValueError, TypeError) as e:
-            logger.warning(
-                f"Failed to get token count for file {file_descriptor['id']}: {e}"
-            )
+            logger.warning("Failed to get token count for file %s: %s", file_id, e)
 
-    return ChatLoadedFile(
-        file_id=file_descriptor["id"],
-        content=content,
+    def _load_content() -> bytes:
+        return get_default_file_store().read_file(file_id, mode="b").read()
+
+    return ChatLoadedFile.lazy_loaded(
+        file_id=file_id,
         file_type=file_type,
-        filename=file_descriptor.get("name"),
+        filename=filename,
         content_text=content_text,
         token_count=token_count,
+        loader=_load_content,
     )
+
+
+_MAX_PARALLEL_CHAT_FILE_LOADS = 16
 
 
 def load_all_chat_files(
     chat_messages: list[ChatMessage],
     db_session: Session,
 ) -> list[ChatLoadedFile]:
-    # TODO There is likely a more efficient/standard way to load the files here.
+    # Returns lazy ChatLoadedFile instances — raw bytes are not read here.
+    # Defense-in-depth: even though per-file work is now cheap (DB lookup +
+    # optional cached-plaintext fetch), cap fan-out so no future regression
+    # can re-introduce a 500-thread storm.
     file_descriptors_for_history: list[FileDescriptor] = []
     for chat_message in chat_messages:
         if chat_message.files:
@@ -396,7 +501,8 @@ def load_all_chat_files(
             [
                 (load_chat_file, (file, db_session))
                 for file in file_descriptors_for_history
-            ]
+            ],
+            max_workers=_MAX_PARALLEL_CHAT_FILE_LOADS,
         ),
     )
     return files
@@ -538,7 +644,7 @@ def convert_chat_history(
     for idx, chat_message in enumerate(chat_history):
         if chat_message.message_type == MessageType.USER:
             # Process files attached to this message
-            text_files: list[ChatLoadedFile] = []
+            text_files: list[tuple[ChatLoadedFile, FileDescriptor]] = []
             image_files: list[ChatLoadedFile] = []
 
             if chat_message.files:
@@ -549,34 +655,26 @@ def convert_chat_history(
                         if loaded_file.file_type == ChatFileType.IMAGE:
                             image_files.append(loaded_file)
                         else:
-                            # Text files (DOC, PLAIN_TEXT, CSV) are added as separate messages
-                            text_files.append(loaded_file)
+                            # Text files (DOC, PLAIN_TEXT, TABULAR) are added as separate messages
+                            text_files.append((loaded_file, file_descriptor))
 
             # Add text files as separate messages before the user message.
             # Each message is tagged with ``file_id`` so that forgotten files
             # can be detected after context-window truncation.
-            for text_file in text_files:
-                file_text = text_file.content_text or ""
-                filename = text_file.filename
-                message = (
-                    f"File: {filename}\n{file_text}\nEnd of File"
-                    if filename
-                    else file_text
+            for text_file, fd in text_files:
+                # Use user_file_id as the FileReaderTool accepts that.
+                # Fall back to the file-store path id.
+                tool_id = fd.get("user_file_id") or text_file.file_id
+                filename = text_file.filename or "unknown"
+                ctx = build_file_context(
+                    tool_file_id=tool_id,
+                    filename=filename,
+                    file_type=text_file.file_type,
+                    content_text=text_file.content_text,
+                    token_count=text_file.token_count,
                 )
-                simple_messages.append(
-                    ChatMessageSimple(
-                        message=message,
-                        token_count=text_file.token_count,
-                        message_type=MessageType.USER,
-                        image_files=None,
-                        file_id=text_file.file_id,
-                    )
-                )
-                all_injected_file_metadata[text_file.file_id] = FileToolMetadata(
-                    file_id=text_file.file_id,
-                    filename=filename or "unknown",
-                    approx_char_count=len(file_text),
-                )
+                simple_messages.append(ctx.message)
+                all_injected_file_metadata[tool_id] = ctx.tool_metadata
 
             # Sum token counts from image files (excluding project image files)
             image_token_count = (
@@ -812,3 +910,55 @@ def create_tool_call_failure_messages(
         messages.append(failure_response_msg)
 
     return messages
+
+
+def build_python_chat_files_from_search_docs(
+    search_docs: list[SearchDoc],
+) -> list[ChatFile]:
+    """Turn each eligible search hit into a ready-to-upload `ChatFile`.
+    The associated file needs to have been uploaded to the file store
+    by a Connector.
+    """
+    if not search_docs:
+        return []
+
+    file_store = get_default_file_store()
+
+    chat_files: list[ChatFile] = []
+    seen_file_ids: set[str] = set()
+    for doc in search_docs:
+        if not doc.file_id or doc.file_id in seen_file_ids:
+            continue
+        seen_file_ids.add(doc.file_id)
+
+        try:
+            record = file_store.read_file_record(doc.file_id)
+        except Exception as e:
+            logger.warning(
+                "file_id=%r not found in file store (%s); skipping.", doc.file_id, e
+            )
+            continue
+
+        if record.file_origin not in (
+            FileOrigin.CONNECTOR,
+            FileOrigin.CONNECTOR_FILE_UPLOAD,
+        ):
+            logger.warning(
+                "file_id=%r has origin=%r, not eligible for code-interpreter staging; skipping.",
+                doc.file_id,
+                record.file_origin,
+            )
+            continue
+
+        try:
+            content = file_store.read_file(doc.file_id, mode="b").read()
+        except Exception as e:
+            logger.warning(
+                "Failed to read bytes for file_id=%r: %s; skipping.", doc.file_id, e
+            )
+            continue
+
+        filename = sandbox_filename_for_document(doc.semantic_identifier, doc.file_id)
+        chat_files.append(ChatFile(filename=filename, content=content))
+
+    return chat_files

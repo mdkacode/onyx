@@ -1,11 +1,12 @@
 import type { IconProps } from "@opal/types";
 import {
-  SvgCode,
+  SvgCpu,
   SvgFileText,
   SvgGlobe,
   SvgImage,
   SvgLink,
   SvgSearch,
+  SvgTerminal,
 } from "@opal/icons";
 
 // Tool names as referenced by tool results / tool calls
@@ -24,6 +25,7 @@ export const PYTHON_TOOL_ID = "PythonTool";
 export const OPEN_URL_TOOL_ID = "OpenURLTool";
 export const FILE_READER_TOOL_ID = "FileReaderTool";
 export const PDF_GENERATION_TOOL_ID = "PdfGenerationTool";
+export const CODING_AGENT_TOOL_ID = "CodingAgentTool";
 
 // Icon mappings for system tools
 export const SYSTEM_TOOL_ICONS: Record<
@@ -33,7 +35,8 @@ export const SYSTEM_TOOL_ICONS: Record<
   [SEARCH_TOOL_ID]: SvgSearch,
   [WEB_SEARCH_TOOL_ID]: SvgGlobe,
   [IMAGE_GENERATION_TOOL_ID]: SvgImage,
-  [PYTHON_TOOL_ID]: SvgCode,
+  [PYTHON_TOOL_ID]: SvgTerminal,
   [OPEN_URL_TOOL_ID]: SvgLink,
   [PDF_GENERATION_TOOL_ID]: SvgFileText,
+  [CODING_AGENT_TOOL_ID]: SvgCpu,
 };

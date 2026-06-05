@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { mutate } from "swr";
+import { SettingsLayouts } from "@opal/layouts";
 import { Section } from "@/layouts/general-layouts";
-import Button from "@/refresh-components/buttons/Button";
 import Text from "@/refresh-components/texts/Text";
 import { SvgArrowUpCircle, SvgWallet } from "@opal/icons";
 import type { IconProps } from "@opal/types";
@@ -14,15 +14,24 @@ import {
   BillingInformation,
   hasActiveSubscription,
   claimLicense,
+  endTrial,
+  PaymentMethodRequiredError,
+  createCustomerPortalSession,
+  StripePortalFlowType,
 } from "@/lib/billing";
 import { NEXT_PUBLIC_CLOUD_ENABLED } from "@/lib/constants";
+import { SWR_KEYS } from "@/lib/swr-keys";
 import { useUser } from "@/providers/UserProvider";
+import { LinkButton, MessageCard } from "@opal/components";
 
 import PlansView from "./PlansView";
 import CheckoutView from "./CheckoutView";
 import BillingDetailsView from "./BillingDetailsView";
 import LicenseActivationCard from "./LicenseActivationCard";
 import "./billing.css";
+
+// sessionStorage key: value is a unix-ms expiry timestamp
+const BILLING_ACTIVATING_KEY = "billing_license_activating_until";
 
 // ----------------------------------------------------------------------------
 // Types
@@ -66,25 +75,10 @@ function FooterLinks({
           <Text secondaryBody text03>
             Have a license key?
           </Text>
-          {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
-          <Button action tertiary onClick={onActivateLicense}>
-            <Text secondaryBody text05 className="underline">
-              {licenseText}
-            </Text>
-          </Button>
+          <LinkButton onClick={onActivateLicense}>{licenseText}</LinkButton>
         </>
       )}
-      {/* TODO(@raunakab): migrate to opal Button once className/iconClassName is resolved */}
-      <Button
-        action
-        tertiary
-        href={billingHelpHref}
-        className="billing-text-link"
-      >
-        <Text secondaryBody text03 className="underline">
-          Billing Help
-        </Text>
-      </Button>
+      <LinkButton href={billingHelpHref}>Billing Help</LinkButton>
     </Section>
   );
 }
@@ -105,6 +99,7 @@ export default function BillingPage() {
   const [transitionType, setTransitionType] = useState<
     "expand" | "collapse" | "fade"
   >("fade");
+  const [isActivating, setIsActivating] = useState<boolean>(false);
 
   const {
     data: billingData,
@@ -155,6 +150,17 @@ export default function BillingPage() {
     view,
   ]);
 
+  // Read activating state from sessionStorage after mount (avoids SSR hydration mismatch)
+  useEffect(() => {
+    const raw = sessionStorage.getItem(BILLING_ACTIVATING_KEY);
+    if (!raw) return;
+    if (Number(raw) > Date.now()) {
+      setIsActivating(true);
+    } else {
+      sessionStorage.removeItem(BILLING_ACTIVATING_KEY);
+    }
+  }, []);
+
   // Show license activation card when there's a Stripe error
   useEffect(() => {
     if (hasStripeError && !showLicenseActivationInput) {
@@ -167,29 +173,140 @@ export default function BillingPage() {
   useEffect(() => {
     const sessionId = searchParams.get("session_id");
     const portalReturn = searchParams.get("portal_return");
+    const retryUpgrade = searchParams.get("retry_upgrade") === "1";
 
     if (!sessionId && !portalReturn) return;
 
     router.replace("/admin/billing", { scroll: false });
 
+    let cancelled = false;
+
     const handleBillingReturn = async () => {
       if (!NEXT_PUBLIC_CLOUD_ENABLED) {
-        try {
-          // After checkout, exchange session_id for license; after portal, re-sync license
-          await claimLicense(sessionId ?? undefined);
-          refreshLicense();
-          // Refresh the page to update settings (including ee_features_enabled)
-          router.refresh();
-          // Navigate to billing details now that the license is active
-          changeView("details");
-        } catch (error) {
-          console.error("Failed to sync license after billing return:", error);
+        // Retry up to 3 times with 2s backoff. The license may not be available
+        // immediately if the Stripe webhook hasn't finished processing yet
+        // (redirect and webhook fire nearly simultaneously).
+        let lastError: Error | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (cancelled) return;
+          try {
+            // After checkout, exchange session_id for license; after portal, re-sync license
+            await claimLicense(sessionId ?? undefined);
+            if (cancelled) return;
+            refreshLicense();
+            // Refresh settings so EE-gated UI (e.g. sidebar) updates immediately.
+            router.refresh();
+            mutate(SWR_KEYS.settings);
+            mutate(SWR_KEYS.enterpriseSettings);
+            // Navigate to billing details now that the license is active
+            changeView("details");
+            lastError = null;
+            break;
+          } catch (err) {
+            lastError = err instanceof Error ? err : new Error("Unknown error");
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+            }
+          }
+        }
+        if (cancelled) return;
+        if (lastError) {
+          console.error(
+            "Failed to sync license after billing return:",
+            lastError
+          );
+          // Show an activating banner on the plans view and keep retrying in the background.
+          sessionStorage.setItem(
+            BILLING_ACTIVATING_KEY,
+            String(Date.now() + 120_000)
+          );
+          setIsActivating(true);
+          changeView("plans");
         }
       }
-      refreshBilling();
+      if (!cancelled) refreshBilling();
+
+      // Auto-retry the trial upgrade if the user just came back from the
+      // add-payment-method portal flow. This avoids making them click
+      // "Upgrade now" a second time once their card is on file.
+      if (!cancelled && retryUpgrade && NEXT_PUBLIC_CLOUD_ENABLED) {
+        try {
+          await endTrial();
+          if (!cancelled) {
+            refreshBilling();
+            router.refresh();
+            mutate(SWR_KEYS.settings);
+            mutate(SWR_KEYS.enterpriseSettings);
+          }
+        } catch (err) {
+          if (err instanceof PaymentMethodRequiredError) {
+            // Card add was abandoned or failed verification — bounce them
+            // back to the same flow so they can complete it.
+            try {
+              const response = await createCustomerPortalSession({
+                return_url: `${window.location.origin}/admin/billing?portal_return=true&retry_upgrade=1`,
+                flow_type: StripePortalFlowType.PAYMENT_METHOD_UPDATE,
+              });
+              if (response.stripe_customer_portal_url) {
+                window.location.href = response.stripe_customer_portal_url;
+              }
+            } catch (portalErr) {
+              console.error("Failed to reopen portal after retry:", portalErr);
+            }
+          } else {
+            console.error("Auto-retry of trial upgrade failed:", err);
+          }
+        }
+      }
     };
     handleBillingReturn();
-  }, [searchParams, router, refreshBilling, refreshLicense]);
+
+    return () => {
+      cancelled = true;
+    };
+    // changeView intentionally omitted: it only calls stable state setters and the
+    // effect runs at most once (when session_id/portal_return params are present).
+  }, [searchParams, router, refreshBilling, refreshLicense]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll every 15s while activating, up to 2 minutes, to detect when the license arrives.
+  useEffect(() => {
+    if (!isActivating) return;
+
+    let requestInFlight = false;
+
+    const intervalId = setInterval(async () => {
+      if (requestInFlight) return;
+      const raw = sessionStorage.getItem(BILLING_ACTIVATING_KEY);
+      if (!raw || Number(raw) <= Date.now()) {
+        // Expired — stop immediately without waiting for React cleanup
+        clearInterval(intervalId);
+        sessionStorage.removeItem(BILLING_ACTIVATING_KEY);
+        setIsActivating(false);
+        return;
+      }
+      requestInFlight = true;
+      try {
+        await claimLicense(undefined);
+        sessionStorage.removeItem(BILLING_ACTIVATING_KEY);
+        setIsActivating(false);
+        refreshLicense();
+        refreshBilling();
+        // Refresh settings so EE-gated UI (e.g. sidebar) updates immediately.
+        router.refresh();
+        mutate(SWR_KEYS.settings);
+        mutate(SWR_KEYS.enterpriseSettings);
+        changeView("details");
+      } catch (err) {
+        // License not ready yet — keep polling. Log so unexpected failures
+        // (network errors, 500s) are distinguishable from expected 404s.
+        console.debug("License activation poll: will retry", err);
+      } finally {
+        requestInFlight = false;
+      }
+    }, 15_000);
+
+    return () => clearInterval(intervalId);
+  }, [isActivating]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRefresh = async () => {
     await Promise.all([
@@ -224,8 +341,10 @@ export default function BillingPage() {
   const handleLicenseActivated = () => {
     refreshLicense();
     refreshBilling();
-    // Refresh the page to update settings (including ee_features_enabled)
+    // Refresh settings so EE-gated UI (e.g. sidebar) updates immediately.
     router.refresh();
+    mutate(SWR_KEYS.settings);
+    mutate(SWR_KEYS.enterpriseSettings);
     // Navigate to billing details now that the license is active
     changeView("details");
   };
@@ -380,12 +499,22 @@ export default function BillingPage() {
       <SettingsLayouts.Header
         icon={viewConfig.icon}
         title={viewConfig.title}
-        backButton={viewConfig.showBackButton}
-        onBack={handleBack}
-        separator
+        backButton={viewConfig.showBackButton && handleBack}
+        divider
       />
       <SettingsLayouts.Body>
         <div className="flex flex-col items-center gap-6">
+          {isActivating && (
+            <MessageCard
+              variant="warning"
+              title="Your license is still activating"
+              description="Your license is being processed. You'll be taken to billing details automatically once confirmed."
+              onClose={() => {
+                sessionStorage.removeItem(BILLING_ACTIVATING_KEY);
+                setIsActivating(false);
+              }}
+            />
+          )}
           {renderContent()}
           {renderFooter()}
         </div>

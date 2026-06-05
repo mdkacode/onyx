@@ -1,14 +1,14 @@
+"use client";
+
 import "@opal/components/buttons/select-button/styles.css";
-import "@opal/components/tooltip.css";
-import {
-  Interactive,
-  useDisabled,
-  type InteractiveStatefulProps,
-} from "@opal/core";
-import type { ContainerSizeVariants, ExtremaSizeVariants } from "@opal/types";
-import type { TooltipSide } from "@opal/components";
-import type { IconFunctionComponent } from "@opal/types";
-import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import { Interactive, type InteractiveStatefulProps } from "@opal/core";
+import type {
+  ContainerSizeVariants,
+  ExtremaSizeVariants,
+  IconFunctionComponent,
+  RichStr,
+} from "@opal/types";
+import { Text, Tooltip, type TooltipSide } from "@opal/components";
 import { cn } from "@opal/utils";
 import { iconWrapper } from "@opal/components/buttons/icon-wrapper";
 
@@ -27,19 +27,19 @@ type SelectButtonContentProps =
   | {
       foldable: true;
       icon: IconFunctionComponent;
-      children: string;
+      children: string | RichStr;
       rightIcon?: IconFunctionComponent;
     }
   | {
       foldable?: false;
       icon?: IconFunctionComponent;
-      children: string;
+      children: string | RichStr;
       rightIcon?: IconFunctionComponent;
     }
   | {
       foldable?: false;
       icon: IconFunctionComponent;
-      children?: string;
+      children?: string | RichStr;
       rightIcon?: IconFunctionComponent;
     };
 
@@ -50,9 +50,6 @@ type SelectButtonProps = InteractiveStatefulProps &
      */
     size?: ContainerSizeVariants;
 
-    /** HTML button type. Container renders a `<button>` element. */
-    type?: "submit" | "button" | "reset";
-
     /** Tooltip text shown on hover. */
     tooltip?: string;
 
@@ -61,6 +58,9 @@ type SelectButtonProps = InteractiveStatefulProps &
 
     /** Which side the tooltip appears on. */
     tooltipSide?: TooltipSide;
+
+    /** Applies disabled styling and suppresses clicks. */
+    disabled?: boolean;
   };
 
 // ---------------------------------------------------------------------------
@@ -77,35 +77,32 @@ function SelectButton({
   width,
   tooltip,
   tooltipSide = "top",
+  disabled,
   ...statefulProps
 }: SelectButtonProps) {
-  const { isDisabled } = useDisabled();
   const isLarge = size === "lg";
 
   const labelEl = children ? (
-    <span
-      className={cn(
-        "opal-select-button-label",
-        isLarge ? "font-main-ui-body" : "font-secondary-body"
-      )}
+    <Text
+      font={isLarge ? "main-ui-body" : "secondary-body"}
+      color="inherit"
+      nowrap
     >
       {children}
-    </span>
+    </Text>
   ) : null;
 
   const button = (
-    <Interactive.Stateful {...statefulProps}>
+    <Interactive.Stateful disabled={disabled} {...statefulProps}>
       <Interactive.Container
         type={type}
-        heightVariant={size}
-        widthVariant={width}
-        roundingVariant={
-          isLarge ? "default" : size === "2xs" ? "mini" : "compact"
-        }
+        size={size}
+        width={width}
+        rounding={isLarge ? "md" : size === "2xs" ? "xs" : "sm"}
       >
         <div
           className={cn(
-            "opal-select-button interactive-foreground",
+            "opal-select-button",
             foldable && "interactive-foldable-host"
           )}
         >
@@ -128,23 +125,12 @@ function SelectButton({
   );
 
   const resolvedTooltip =
-    tooltip ?? (foldable && isDisabled && children ? children : undefined);
-
-  if (!resolvedTooltip) return button;
+    tooltip ?? (foldable && disabled && children ? children : undefined);
 
   return (
-    <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger asChild>{button}</TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal>
-        <TooltipPrimitive.Content
-          className="opal-tooltip"
-          side={tooltipSide}
-          sideOffset={4}
-        >
-          {resolvedTooltip}
-        </TooltipPrimitive.Content>
-      </TooltipPrimitive.Portal>
-    </TooltipPrimitive.Root>
+    <Tooltip tooltip={resolvedTooltip} side={tooltipSide}>
+      {button}
+    </Tooltip>
   );
 }
 

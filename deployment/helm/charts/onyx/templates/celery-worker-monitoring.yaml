@@ -65,18 +65,31 @@ spec:
               "-A",
               "onyx.background.celery.versioned_apps.monitoring",
               "worker",
-              {{ printf "--loglevel=%s" .Values.celery_worker_monitoring.logLevel | quote }},
+              {{- with .Values.celery_worker_monitoring.logLevel }}
+              {{ printf "--loglevel=%s" . | quote }},
+              {{- end }}
               "--hostname=monitoring@%n",
               "-Q",
               "monitoring",
             ]
+          ports:
+            - name: metrics
+              containerPort: 9096
+              protocol: TCP
           resources:
             {{- toYaml .Values.celery_worker_monitoring.resources | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ .Values.config.envConfigMapName }}
+            {{- with .Values.extraEnvFromSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
           env:
             {{- include "onyx.envSecrets" . | nindent 12}}
+            {{- with .Values.celery_worker_monitoring.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.celery_worker_monitoring.volumeMounts }}
           volumeMounts:
             {{- toYaml . | nindent 12 }}

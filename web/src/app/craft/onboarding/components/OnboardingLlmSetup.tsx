@@ -1,81 +1,22 @@
 "use client";
 
 import { SvgCheckCircle } from "@opal/icons";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 import { Disabled } from "@opal/core";
-import Text from "@/refresh-components/texts/Text";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
-import { LLMProviderName, LLMProviderDescriptor } from "@/interfaces/llm";
+import { Text, Tooltip } from "@opal/components";
+import { LLMProviderDescriptor } from "@/lib/languageModels/types";
+import {
+  BUILD_MODE_PROVIDERS as PROVIDERS,
+  type ProviderKey,
+} from "@/app/craft/onboarding/constants";
 
-// Provider configurations
-export type ProviderKey = "anthropic" | "openai" | "openrouter";
-
-interface ModelOption {
-  name: string;
-  label: string;
-  recommended?: boolean;
-}
-
-export interface ProviderConfig {
-  key: ProviderKey;
-  label: string;
-  providerName: LLMProviderName;
-  recommended?: boolean;
-  models: ModelOption[];
-  apiKeyPlaceholder: string;
-  apiKeyUrl: string;
-  apiKeyLabel: string;
-}
-
-export const PROVIDERS: ProviderConfig[] = [
-  {
-    key: "anthropic",
-    label: "Anthropic",
-    providerName: LLMProviderName.ANTHROPIC,
-    recommended: true,
-    models: [
-      { name: "claude-opus-4-6", label: "Claude Opus 4.6", recommended: true },
-      { name: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    ],
-    apiKeyPlaceholder: "sk-ant-...",
-    apiKeyUrl: "https://console.anthropic.com/dashboard",
-    apiKeyLabel: "Anthropic Console",
-  },
-  {
-    key: "openai",
-    label: "OpenAI",
-    providerName: LLMProviderName.OPENAI,
-    models: [
-      { name: "gpt-5.2", label: "GPT-5.2", recommended: true },
-      { name: "gpt-5.1", label: "GPT-5.1" },
-    ],
-    apiKeyPlaceholder: "sk-...",
-    apiKeyUrl: "https://platform.openai.com/api-keys",
-    apiKeyLabel: "OpenAI Dashboard",
-  },
-  {
-    key: "openrouter",
-    label: "OpenRouter",
-    providerName: LLMProviderName.OPENROUTER,
-    models: [
-      {
-        name: "moonshotai/kimi-k2-thinking",
-        label: "Kimi K2 Thinking",
-        recommended: true,
-      },
-      { name: "google/gemini-3-pro-preview", label: "Gemini 3 Pro" },
-      { name: "qwen/qwen3-235b-a22b-thinking-2507", label: "Qwen3 235B" },
-    ],
-    apiKeyPlaceholder: "sk-or-...",
-    apiKeyUrl: "https://openrouter.ai/keys",
-    apiKeyLabel: "OpenRouter Dashboard",
-  },
-];
+export { PROVIDERS };
+export type { ProviderKey };
 
 interface SelectableButtonProps {
   selected: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: string;
   subtext?: string;
   disabled?: boolean;
   tooltip?: string;
@@ -103,11 +44,13 @@ function SelectableButton({
               : "border-border-01 bg-background-tint-00 text-text-04 hover:bg-background-tint-01"
           )}
         >
-          <Text mainUiAction>{children}</Text>
+          <Text font="main-ui-action" color="text-05">
+            {children}
+          </Text>
         </button>
       </Disabled>
       {subtext && (
-        <Text figureSmallLabel text02>
+        <Text font="figure-small-label" color="text-02">
           {subtext}
         </Text>
       )}
@@ -115,7 +58,7 @@ function SelectableButton({
   );
 
   if (tooltip) {
-    return <SimpleTooltip tooltip={tooltip}>{button}</SimpleTooltip>;
+    return <Tooltip tooltip={tooltip}>{button}</Tooltip>;
   }
 
   return button;
@@ -150,11 +93,13 @@ function ModelSelectButton({
               : "border-border-01 bg-background-tint-00 text-text-04 hover:bg-background-tint-01"
           )}
         >
-          <Text mainUiAction>{label}</Text>
+          <Text font="main-ui-action" color="text-05">
+            {label}
+          </Text>
         </button>
       </Disabled>
       {recommended && (
-        <Text figureSmallLabel text02>
+        <Text font="figure-small-label" color="text-02">
           Recommended
         </Text>
       )}
@@ -226,14 +171,14 @@ export default function OnboardingLlmSetup({
     <div className="flex-1 flex flex-col gap-6 justify-between">
       {/* Header */}
       <div className="flex items-center justify-center">
-        <Text headingH2 text05>
+        <Text font="heading-h2" color="text-05">
           Connect your LLM
         </Text>
       </div>
 
       {/* Provider selection */}
       <div className="flex flex-col gap-3 items-center">
-        <Text mainUiBody text04>
+        <Text font="main-ui-body" color="text-04">
           Provider
         </Text>
         <div className="flex justify-center gap-3 w-full max-w-md">
@@ -268,7 +213,7 @@ export default function OnboardingLlmSetup({
 
       {/* Model selection */}
       <div className="flex flex-col gap-3 items-center">
-        <Text mainUiBody text04>
+        <Text font="main-ui-body" color="text-04">
           Default Model
         </Text>
         <div className="flex justify-center gap-3 flex-wrap w-full max-w-md">
@@ -288,7 +233,7 @@ export default function OnboardingLlmSetup({
 
       {/* API Key input */}
       <div className="flex flex-col gap-3 items-center">
-        <Text mainUiBody text04>
+        <Text font="main-ui-body" color="text-04">
           API Key
         </Text>
         <div className="w-full max-w-md">
@@ -299,13 +244,13 @@ export default function OnboardingLlmSetup({
               onChange={(e) => handleApiKeyChange(e.target.value)}
               placeholder={currentProviderConfig.apiKeyPlaceholder}
               disabled={connectionStatus === "testing"}
-              className="w-full px-3 py-2 rounded-08 input-normal text-text-04 placeholder:text-text-02 focus:outline-none"
+              className="w-full px-3 py-2 rounded-08 input-normal text-text-04 placeholder:text-text-02 focus:outline-hidden"
             />
           </Disabled>
           {/* Message area */}
-          <div className="min-h-[2rem] flex justify-center pt-4">
+          <div className="min-h-8 flex justify-center pt-4">
             {connectionStatus === "error" && (
-              <Text secondaryBody className="text-red-500">
+              <Text font="secondary-body" color="status-error-05">
                 {errorMessage}
               </Text>
             )}
@@ -316,7 +261,7 @@ export default function OnboardingLlmSetup({
               )}
             >
               <SvgCheckCircle className="w-4 h-4 stroke-status-success-05 shrink-0" />
-              <Text secondaryBody className="text-status-success-05">
+              <Text font="secondary-body" color="status-success-05">
                 Success!
               </Text>
             </div>

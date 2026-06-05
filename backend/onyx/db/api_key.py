@@ -1,23 +1,34 @@
 import uuid
 
 from fastapi_users.password import PasswordHelper
+from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from sqlalchemy.orm import selectinload
 from sqlalchemy.orm import Session
 
 from onyx.auth.api_key import ApiKeyDescriptor
 from onyx.auth.api_key import build_displayable_api_key
 from onyx.auth.api_key import generate_api_key
 from onyx.auth.api_key import hash_api_key
+from onyx.auth.schemas import UserRole
 from onyx.configs.constants import DANSWER_API_KEY_DUMMY_EMAIL_DOMAIN
 from onyx.configs.constants import DANSWER_API_KEY_PREFIX
 from onyx.configs.constants import UNNAMED_KEY_PLACEHOLDER
+from onyx.db.enums import AccountType
+from onyx.db.enums import Permission
 from onyx.db.models import ApiKey
 from onyx.db.models import User
+from onyx.db.models import User__UserGroup
+from onyx.db.models import UserGroup
+from onyx.db.permissions import recompute_user_permissions__no_commit
+from onyx.db.users import assign_user_to_default_groups__no_commit
+from onyx.db.users import delete_user_from_db
 from onyx.server.api_key.models import APIKeyArgs
+from onyx.utils.logger import setup_logger
 from shared_configs.contextvars import get_current_tenant_id
+
+logger = setup_logger()
 
 
 def get_api_key_email_pattern() -> str:
@@ -55,7 +66,6 @@ async def fetch_user_for_api_key(
         select(User)
         .join(ApiKey, ApiKey.user_id == User.id)
         .where(ApiKey.hashed_api_key == hashed_api_key)
-        .options(selectinload(User.memories))
     )
 
 
@@ -87,6 +97,7 @@ def insert_api_key(
         is_superuser=False,
         is_verified=True,
         role=api_key_args.role,
+        account_type=AccountType.SERVICE_ACCOUNT,
     )
     db_session.add(api_key_user_row)
 
@@ -99,7 +110,23 @@ def insert_api_key(
     )
     db_session.add(api_key_row)
 
+    # Assign the API key virtual user to the appropriate default group
+    # before commit so everything is atomic.
+    # Only ADMIN and BASIC roles get default group membership.
+    if api_key_args.role in (UserRole.ADMIN, UserRole.BASIC):
+        assign_user_to_default_groups__no_commit(
+            db_session,
+            api_key_user_row,
+            is_admin=(api_key_args.role == UserRole.ADMIN),
+        )
+    elif api_key_args.role == UserRole.LIMITED:
+        # LIMITED keys join no group, so they get no group-derived permissions.
+        # Grant chat scope directly to preserve their chat-only capability
+        # (WRITE_CHAT implies READ_CHAT).
+        api_key_user_row.effective_permissions = [Permission.WRITE_CHAT.value]
+
     db_session.commit()
+
     return ApiKeyDescriptor(
         api_key_id=api_key_row.id,
         api_key_role=api_key_user_row.role,
@@ -119,14 +146,45 @@ def update_api_key(
 
     existing_api_key.name = api_key_args.name
     api_key_user = db_session.scalar(
-        select(User).where(User.id == existing_api_key.user_id)  # type: ignore
+        select(User).where(
+            User.id == existing_api_key.user_id  # ty: ignore[invalid-argument-type]
+        )
     )
     if api_key_user is None:
         raise RuntimeError("API Key does not have associated user.")
 
     email_name = api_key_args.name or UNNAMED_KEY_PLACEHOLDER
     api_key_user.email = get_api_key_fake_email(email_name, str(api_key_user.id))
+
+    old_role = api_key_user.role
     api_key_user.role = api_key_args.role
+
+    # Reconcile default-group membership when the role changes.
+    if old_role != api_key_args.role:
+        # Remove from all default groups first.
+        delete_stmt = delete(User__UserGroup).where(
+            User__UserGroup.user_id == api_key_user.id,
+            User__UserGroup.user_group_id.in_(
+                select(UserGroup.id).where(UserGroup.is_default.is_(True))
+            ),
+        )
+        db_session.execute(delete_stmt)
+
+        # Re-assign to the correct default group (only for ADMIN/BASIC).
+        if api_key_args.role in (UserRole.ADMIN, UserRole.BASIC):
+            assign_user_to_default_groups__no_commit(
+                db_session,
+                api_key_user,
+                is_admin=(api_key_args.role == UserRole.ADMIN),
+            )
+        elif api_key_args.role == UserRole.LIMITED:
+            # LIMITED keys join no group; grant chat scope directly to match
+            # insert_api_key (WRITE_CHAT implies READ_CHAT).
+            api_key_user.effective_permissions = [Permission.WRITE_CHAT.value]
+        else:
+            # Recompute since we just removed the old default-group membership.
+            recompute_user_permissions__no_commit(api_key_user.id, db_session)
+
     db_session.commit()
 
     return ApiKeyDescriptor(
@@ -145,7 +203,9 @@ def regenerate_api_key(db_session: Session, api_key_id: int) -> ApiKeyDescriptor
         raise ValueError(f"API key with id {api_key_id} does not exist")
 
     api_key_user = db_session.scalar(
-        select(User).where(User.id == existing_api_key.user_id)  # type: ignore
+        select(User).where(
+            User.id == existing_api_key.user_id  # ty: ignore[invalid-argument-type]
+        )
     )
     if api_key_user is None:
         raise RuntimeError("API Key does not have associated user.")
@@ -174,7 +234,9 @@ def remove_api_key(db_session: Session, api_key_id: int) -> None:
         raise ValueError(f"API key with id {api_key_id} does not exist")
 
     user_associated_with_key = db_session.scalar(
-        select(User).where(User.id == existing_api_key.user_id)  # type: ignore
+        select(User).where(
+            User.id == existing_api_key.user_id  # ty: ignore[invalid-argument-type]
+        )
     )
     if user_associated_with_key is None:
         raise ValueError(
@@ -182,5 +244,7 @@ def remove_api_key(db_session: Session, api_key_id: int) -> None:
         )
 
     db_session.delete(existing_api_key)
-    db_session.delete(user_associated_with_key)
-    db_session.commit()
+    # The synthetic API-key user has rows in user__user_group (and may have
+    # other FK-bearing associations); route through the canonical user-delete
+    # helper so all of them are cleaned up before the user row is removed.
+    delete_user_from_db(user_associated_with_key, db_session)

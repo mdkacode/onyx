@@ -7,11 +7,11 @@ import {
   useCallback,
   useEffect,
 } from "react";
+import { Hoverable } from "@opal/core";
 import { SvgEdit } from "@opal/icons";
-import { Tag } from "@opal/components";
-import IconButton from "@/refresh-components/buttons/IconButton";
+import { Button, Tag } from "@opal/components";
 import Text from "@/refresh-components/texts/Text";
-import SimpleTooltip from "@/refresh-components/SimpleTooltip";
+import { Tooltip } from "@opal/components";
 import EditUserModal from "./EditUserModal";
 import type { UserRow, UserGroupInfo } from "./interfaces";
 
@@ -110,9 +110,9 @@ export default function GroupsCell({
   const hasOverflow = !isMeasuring && overflowCount > 0;
 
   const allGroupsTooltip = (
-    <div className="flex flex-wrap gap-1 max-w-[14rem]">
+    <div className="flex flex-wrap gap-1 max-w-56">
       {groups.map((g) => (
-        <div key={g.id} className="max-w-[10rem]">
+        <div key={g.id} className="max-w-40">
           <Tag title={g.name} size="md" />
         </div>
       ))}
@@ -122,12 +122,12 @@ export default function GroupsCell({
   const tagsContent = (
     <>
       {(isMeasuring ? groups : groups.slice(0, effectiveVisible)).map((g) => (
-        <div key={g.id} data-group-tag className="flex-shrink-0">
+        <div key={g.id} data-group-tag className="shrink-0">
           <Tag title={g.name} size="md" />
         </div>
       ))}
       {hasOverflow && (
-        <div className="flex-shrink-0">
+        <div className="shrink-0">
           <Tag title={`+${overflowCount}`} size="md" />
         </div>
       )}
@@ -136,53 +136,53 @@ export default function GroupsCell({
 
   return (
     <>
-      <div
-        className={`group/groups relative flex items-center w-full min-w-0 ${
-          user.id ? "cursor-pointer" : ""
-        }`}
-        onClick={user.id ? () => setShowModal(true) : undefined}
-      >
-        {groups.length === 0 ? (
-          <div
-            ref={containerRef}
-            className="flex items-center gap-1 overflow-hidden flex-nowrap min-w-0 pr-7"
-          >
-            <Text as="span" secondaryBody text03>
-              —
-            </Text>
-          </div>
-        ) : (
-          <SimpleTooltip
-            side="bottom"
-            align="start"
-            tooltip={allGroupsTooltip}
-            disabled={!hasOverflow}
-            className="bg-background-neutral-01 shadow-sm"
-            delayDuration={200}
-          >
+      <Hoverable.Root group="tags">
+        <div
+          className={`relative flex justify-between items-center w-full min-w-0 ${
+            user.id ? "cursor-pointer" : ""
+          }`}
+          onClick={user.id ? () => setShowModal(true) : undefined}
+        >
+          {groups.length === 0 ? (
             <div
               ref={containerRef}
-              className="flex items-center gap-1 overflow-hidden flex-nowrap min-w-0 pr-7"
+              className="flex items-center gap-1 overflow-hidden flex-nowrap min-w-0 -mr-7"
             >
-              {tagsContent}
+              <Text as="span" secondaryBody text03>
+                —
+              </Text>
             </div>
-          </SimpleTooltip>
-        )}
-        {user.id && (
-          <IconButton
-            tertiary
-            icon={SvgEdit}
-            tooltip="Edit"
-            toolTipPosition="left"
-            tooltipSize="sm"
-            className="absolute right-0 opacity-0 group-hover/groups:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowModal(true);
-            }}
-          />
-        )}
-      </div>
+          ) : (
+            <Tooltip
+              side="bottom"
+              align="start"
+              tooltip={hasOverflow ? allGroupsTooltip : undefined}
+              delayDuration={200}
+            >
+              <div
+                ref={containerRef}
+                className="flex items-center gap-1 overflow-hidden flex-nowrap min-w-0 -mr-7"
+              >
+                {tagsContent}
+              </div>
+            </Tooltip>
+          )}
+          {user.id && (
+            <Hoverable.Item group="tags" variant="appear-on-hover">
+              <Button
+                icon={SvgEdit}
+                prominence="tertiary"
+                tooltip="Edit"
+                tooltipSide="left"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowModal(true);
+                }}
+              />
+            </Hoverable.Item>
+          )}
+        </div>
+      </Hoverable.Root>
       {showModal && user.id != null && (
         <EditUserModal
           user={{ ...user, id: user.id }}

@@ -17,13 +17,20 @@ Auth tests live in test_scim_tokens.py.
 User lifecycle tests live in test_scim_users.py.
 """
 
+import httpx
 import pytest
-import requests
 
 from onyx.auth.schemas import UserRole
+from tests.integration.common_utils.constants import ADMIN_USER_NAME
+from tests.integration.common_utils.constants import API_SERVER_URL
+from tests.integration.common_utils.constants import GENERAL_HEADERS
+from tests.integration.common_utils.http_client import client
 from tests.integration.common_utils.managers.scim_client import ScimClient
 from tests.integration.common_utils.managers.scim_token import ScimTokenManager
-
+from tests.integration.common_utils.managers.user import build_email
+from tests.integration.common_utils.managers.user import DEFAULT_PASSWORD
+from tests.integration.common_utils.managers.user import UserManager
+from tests.integration.common_utils.test_models import DATestUser
 
 SCIM_GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
 SCIM_USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
@@ -44,13 +51,6 @@ def scim_token(idp_style: str) -> str:
     per IdP-style run and reuse. Uses UserManager directly to avoid
     fixture-scope conflicts with the function-scoped admin_user fixture.
     """
-    from tests.integration.common_utils.constants import ADMIN_USER_NAME
-    from tests.integration.common_utils.constants import GENERAL_HEADERS
-    from tests.integration.common_utils.managers.user import build_email
-    from tests.integration.common_utils.managers.user import DEFAULT_PASSWORD
-    from tests.integration.common_utils.managers.user import UserManager
-    from tests.integration.common_utils.test_models import DATestUser
-
     try:
         admin = UserManager.create(name=ADMIN_USER_NAME)
     except Exception:
@@ -120,7 +120,7 @@ def _make_patch_request(operations: list[dict], idp_style: str = "okta") -> dict
     }
 
 
-def _create_scim_user(token: str, email: str, external_id: str) -> requests.Response:
+def _create_scim_user(token: str, email: str, external_id: str) -> httpx.Response:
     return ScimClient.post(
         "/Users", token, json=_make_user_resource(email, external_id)
     )
@@ -131,7 +131,7 @@ def _create_scim_group(
     display_name: str,
     external_id: str | None = None,
     members: list[dict] | None = None,
-) -> requests.Response:
+) -> httpx.Response:
     return ScimClient.post(
         "/Groups",
         token,
@@ -550,3 +550,145 @@ def test_patch_add_duplicate_member_is_idempotent(
     )
     assert resp.status_code == 200
     assert len(resp.json()["members"]) == 1  # still just one member
+
+
+def test_create_group_reserved_name_admin(scim_token: str) -> None:
+    """POST /Groups with reserved name 'Admin' returns 409."""
+    resp = _create_scim_group(scim_token, "Admin", external_id="ext-reserved-admin")
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_create_group_reserved_name_basic(scim_token: str) -> None:
+    """POST /Groups with reserved name 'Basic' returns 409."""
+    resp = _create_scim_group(scim_token, "Basic", external_id="ext-reserved-basic")
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_replace_group_cannot_rename_to_reserved(
+    scim_token: str, idp_style: str
+) -> None:
+    """PUT /Groups/{id} renaming a group to 'Admin' returns 409."""
+    created = _create_scim_group(
+        scim_token,
+        f"Rename To Reserved {idp_style}",
+        external_id=f"ext-rtr-{idp_style}",
+    ).json()
+
+    resp = ScimClient.put(
+        f"/Groups/{created['id']}",
+        scim_token,
+        json=_make_group_resource(
+            display_name="Admin", external_id=f"ext-rtr-{idp_style}"
+        ),
+    )
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_patch_rename_to_reserved_name(scim_token: str, idp_style: str) -> None:
+    """PATCH /Groups/{id} renaming a group to 'Basic' returns 409."""
+    created = _create_scim_group(
+        scim_token,
+        f"Patch Rename Reserved {idp_style}",
+        external_id=f"ext-prr-{idp_style}",
+    ).json()
+
+    resp = ScimClient.patch(
+        f"/Groups/{created['id']}",
+        scim_token,
+        json=_make_patch_request(
+            [{"op": "replace", "path": "displayName", "value": "Basic"}],
+            idp_style,
+        ),
+    )
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_delete_reserved_group_rejected(scim_token: str) -> None:
+    """DELETE /Groups/{id} on a reserved group ('Admin') returns 409."""
+    # Look up the reserved 'Admin' group via SCIM filter
+    resp = ScimClient.get('/Groups?filter=displayName eq "Admin"', scim_token)
+    assert resp.status_code == 200
+    resources = resp.json()["Resources"]
+    assert len(resources) >= 1, "Expected reserved 'Admin' group to exist"
+    admin_group_id = resources[0]["id"]
+
+    resp = ScimClient.delete(f"/Groups/{admin_group_id}", scim_token)
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_scim_created_group_has_basic_permission(
+    scim_token: str, idp_style: str
+) -> None:
+    """POST /Groups assigns the 'basic' permission to the group itself."""
+    # Create a SCIM group (no members needed — we check the group's permissions)
+    resp = _create_scim_group(
+        scim_token,
+        f"Basic Perm Group {idp_style}",
+        external_id=f"ext-basic-perm-{idp_style}",
+    )
+    assert resp.status_code == 201
+    group_id = resp.json()["id"]
+
+    # Log in as the admin user (created by the scim_token fixture).
+    admin = DATestUser(
+        id="",
+        email=build_email(ADMIN_USER_NAME),
+        password=DEFAULT_PASSWORD,
+        headers=GENERAL_HEADERS,
+        role=UserRole.ADMIN,
+        is_active=True,
+    )
+    admin = UserManager.login_as_user(admin)
+
+    # Verify the group itself was granted the basic permission
+    perms_resp = client.get(
+        f"{API_SERVER_URL}/manage/admin/user-group/{group_id}/permissions",
+        headers=admin.headers,
+    )
+    perms_resp.raise_for_status()
+    perms = perms_resp.json()
+    assert "basic" in perms, f"SCIM group should have 'basic' permission, got: {perms}"
+
+
+def test_replace_group_cannot_rename_from_reserved(scim_token: str) -> None:
+    """PUT /Groups/{id} renaming a reserved group ('Admin') to a non-reserved name returns 409."""
+    resp = ScimClient.get('/Groups?filter=displayName eq "Admin"', scim_token)
+    assert resp.status_code == 200
+    resources = resp.json()["Resources"]
+    assert len(resources) >= 1, "Expected reserved 'Admin' group to exist"
+    admin_group_id = resources[0]["id"]
+
+    resp = ScimClient.put(
+        f"/Groups/{admin_group_id}",
+        scim_token,
+        json=_make_group_resource(
+            display_name="RenamedAdmin", external_id="ext-rename-from-reserved"
+        ),
+    )
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_patch_rename_from_reserved_name(scim_token: str, idp_style: str) -> None:
+    """PATCH /Groups/{id} renaming a reserved group ('Admin') returns 409."""
+    resp = ScimClient.get('/Groups?filter=displayName eq "Admin"', scim_token)
+    assert resp.status_code == 200
+    resources = resp.json()["Resources"]
+    assert len(resources) >= 1, "Expected reserved 'Admin' group to exist"
+    admin_group_id = resources[0]["id"]
+
+    resp = ScimClient.patch(
+        f"/Groups/{admin_group_id}",
+        scim_token,
+        json=_make_patch_request(
+            [{"op": "replace", "path": "displayName", "value": "RenamedAdmin"}],
+            idp_style,
+        ),
+    )
+    assert resp.status_code == 409
+    assert "reserved" in resp.json()["detail"].lower()

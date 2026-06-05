@@ -1,5 +1,5 @@
 "use client";
-import * as SettingsLayouts from "@/layouts/settings-layouts";
+import { SettingsLayouts } from "@opal/layouts";
 import { SourceCategory, SourceMetadata } from "@/lib/search/interfaces";
 import { listSourceMetadata } from "@/lib/sources";
 import { Button } from "@opal/components";
@@ -12,12 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip } from "@opal/components";
 import { useFederatedConnectors } from "@/lib/hooks";
 import {
   FederatedConnectorDetail,
@@ -30,7 +25,7 @@ import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/
 import { Credential } from "@/lib/connectors/credentials";
 import { SettingsContext } from "@/providers/SettingsProvider";
 import SourceTile from "@/components/SourceTile";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { InputTypeIn } from "@opal/components";
 import Text from "@/refresh-components/texts/Text";
 import { ADMIN_ROUTES } from "@/lib/admin-routes";
 
@@ -96,33 +91,31 @@ function SourceTileTooltipWrapper({
   }
 
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div>
-            <SourceTile
-              sourceMetadata={sourceMetadata}
-              preSelect={preSelect}
-              navigationUrl={navigationUrl}
-              hasExistingSlackCredentials={!!hasExistingSlackCredentials}
-            />
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-sm">
-          {existingFederatedConnector ? (
-            <Text as="p" textLight05 secondaryBody>
-              <strong>Federated connector already configured.</strong> Click to
-              edit the existing connector.
-            </Text>
-          ) : hasExistingSlackCredentials ? (
-            <Text as="p" textLight05 secondaryBody>
-              <strong>Existing Slack credentials found.</strong> Click to manage
-              your Slack connector.
-            </Text>
-          ) : null}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip
+      side="top"
+      tooltip={
+        existingFederatedConnector ? (
+          <Text as="p" textLight05 secondaryBody>
+            <strong>Federated connector already configured.</strong> Click to
+            edit the existing connector.
+          </Text>
+        ) : hasExistingSlackCredentials ? (
+          <Text as="p" textLight05 secondaryBody>
+            <strong>Existing Slack credentials found.</strong> Click to manage
+            your Slack connector.
+          </Text>
+        ) : undefined
+      }
+    >
+      <div>
+        <SourceTile
+          sourceMetadata={sourceMetadata}
+          preSelect={preSelect}
+          navigationUrl={navigationUrl}
+          hasExistingSlackCredentials={!!hasExistingSlackCredentials}
+        />
+      </div>
+    </Tooltip>
   );
 }
 
@@ -260,7 +253,7 @@ export default function Page() {
         rightChildren={
           <Button href="/admin/indexing/status">See Connectors</Button>
         }
-        separator
+        divider
       />
       <SettingsLayouts.Body>
         <InputTypeIn
@@ -270,7 +263,6 @@ export default function Page() {
           value={rawSearchTerm} // keep the input bound to immediate state
           onChange={(event) => setSearchTerm(event.target.value)}
           onKeyDown={handleKeyPress}
-          className="w-96 flex-none"
         />
 
         {dedupedPopular.length > 0 && (

@@ -19,7 +19,7 @@ logger = setup_logger()
 #####
 # App Configs
 #####
-APP_HOST = "0.0.0.0"
+APP_HOST = "0.0.0.0"  # noqa: S104 — server bind address; intentional default for containerized deployment
 APP_PORT = 8080
 # API_PREFIX is used to prepend a base path for all API routes
 # generally used if using a reverse proxy which doesn't support stripping the `/api`
@@ -44,6 +44,31 @@ SEND_USER_METADATA_TO_LLM_PROVIDER = (
 # User Facing Features Configs
 #####
 BLURB_SIZE = 128  # Number Encoder Tokens included in the chunk blurb
+
+# Hard ceiling for the admin-configurable file upload size (in MB).
+# Self-hosted customers can raise or lower this via the environment variable.
+_raw_max_upload_size_mb = int(os.environ.get("MAX_ALLOWED_UPLOAD_SIZE_MB", "250"))
+if _raw_max_upload_size_mb < 0:
+    logger.warning(
+        "MAX_ALLOWED_UPLOAD_SIZE_MB=%d is negative; falling back to 250",
+        _raw_max_upload_size_mb,
+    )
+    _raw_max_upload_size_mb = 250
+MAX_ALLOWED_UPLOAD_SIZE_MB = _raw_max_upload_size_mb
+
+# Default fallback for the per-user file upload size limit (in MB) when no
+# admin-configured value exists.  Clamped to MAX_ALLOWED_UPLOAD_SIZE_MB at
+# runtime so this never silently exceeds the hard ceiling.
+_raw_default_upload_size_mb = int(
+    os.environ.get("DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB", "100")
+)
+if _raw_default_upload_size_mb < 0:
+    logger.warning(
+        "DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB=%d is negative; falling back to 100",
+        _raw_default_upload_size_mb,
+    )
+    _raw_default_upload_size_mb = 100
+DEFAULT_USER_FILE_MAX_UPLOAD_SIZE_MB = _raw_default_upload_size_mb
 GENERATIVE_MODEL_ACCESS_CHECK_FREQ = int(
     os.environ.get("GENERATIVE_MODEL_ACCESS_CHECK_FREQ") or 86400
 )  # 1 day
@@ -64,16 +89,16 @@ CACHE_BACKEND = CacheBackendType(
     os.environ.get("CACHE_BACKEND", CacheBackendType.REDIS)
 )
 
-# Maximum token count for a single uploaded file. Files exceeding this are rejected.
-# Defaults to 100k tokens (or 10M when vector DB is disabled).
-_DEFAULT_FILE_TOKEN_LIMIT = 10_000_000 if DISABLE_VECTOR_DB else 100_000
-FILE_TOKEN_COUNT_THRESHOLD = int(
-    os.environ.get("FILE_TOKEN_COUNT_THRESHOLD", str(_DEFAULT_FILE_TOKEN_LIMIT))
+# Cache query embeddings in the configured cache backend so identical queries
+# (across users / agentic sub-queries) don't re-hit the embedding provider.
+QUERY_EMBEDDING_CACHE_ENABLED = (
+    os.environ.get("QUERY_EMBEDDING_CACHE_ENABLED", "true").lower() == "true"
 )
-
-# Maximum upload size for a single user file (chat/projects) in MB.
-USER_FILE_MAX_UPLOAD_SIZE_MB = int(os.environ.get("USER_FILE_MAX_UPLOAD_SIZE_MB") or 50)
-USER_FILE_MAX_UPLOAD_SIZE_BYTES = USER_FILE_MAX_UPLOAD_SIZE_MB * 1024 * 1024
+assert (
+    QUERY_EMBEDDING_CACHE_TTL_S := int(
+        os.environ.get("QUERY_EMBEDDING_CACHE_TTL_S", "900")
+    )
+) > 0, "QUERY_EMBEDDING_CACHE_TTL_S must be positive."
 
 # If set to true, will show extra/uncommon connectors in the "Other" category
 SHOW_EXTRA_CONNECTORS = os.environ.get("SHOW_EXTRA_CONNECTORS", "").lower() == "true"
@@ -84,6 +109,12 @@ SHOW_EXTRA_CONNECTORS = os.environ.get("SHOW_EXTRA_CONNECTORS", "").lower() == "
 # 3. no queries
 ONYX_QUERY_HISTORY_TYPE = QueryHistoryType(
     (os.environ.get("ONYX_QUERY_HISTORY_TYPE") or QueryHistoryType.NORMAL.value).lower()
+)
+
+# Visibility-only: hides the Query History page from the admin sidebar; the
+# history APIs + recording stay on (unlike ONYX_QUERY_HISTORY_TYPE=disabled).
+HIDE_QUERY_HISTORY_FROM_ADMIN_PANEL = (
+    os.environ.get("HIDE_QUERY_HISTORY_FROM_ADMIN_PANEL", "").lower() == "true"
 )
 
 #####
@@ -169,6 +200,13 @@ DISPOSABLE_EMAIL_DOMAINS_URL = os.environ.get(
     "https://disposable.github.io/disposable-email-domains/domains.json",
 )
 
+# Captcha cookie TTL — how long a verified captcha token remains valid in
+# the browser cookie before the user has to solve another challenge. Sized
+# to comfortably cover one Google OAuth round-trip (typically <10s) while
+# keeping the replay window tight. 120s also matches Google's own v3 token
+# lifetime, so a paired-up cookie + token never outlive each other.
+CAPTCHA_COOKIE_TTL_SECONDS = int(os.environ.get("CAPTCHA_COOKIE_TTL_SECONDS", "120"))
+
 # OAuth Login Flow
 # Used for both Google OAuth2 and OIDC flows
 OAUTH_CLIENT_ID = (
@@ -181,6 +219,29 @@ OAUTH_CLIENT_SECRET = (
 
 # Whether Google OAuth is enabled (requires both client ID and secret)
 OAUTH_ENABLED = bool(OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET)
+
+# Default scopes requested when signing in with Google (AUTH_TYPE=google_oauth
+# or AUTH_TYPE=cloud, and the BASIC + OAuth fallback path). These are the
+# minimum required to identify the user via OpenID Connect.
+GOOGLE_LOGIN_BASE_SCOPES = ["openid", "email", "profile"]
+
+# Applicable for Google OAuth login, allows you to override the scopes that
+# are requested from Google. Mirrors OIDC_SCOPE_OVERRIDE; useful when the
+# access token needs to be passed through to tool calls that require
+# additional Google API scopes.
+GOOGLE_OAUTH_SCOPE_OVERRIDE: list[str] | None = None
+_GOOGLE_OAUTH_SCOPE_OVERRIDE = os.environ.get("GOOGLE_OAUTH_SCOPE_OVERRIDE")
+
+if _GOOGLE_OAUTH_SCOPE_OVERRIDE:
+    try:
+        GOOGLE_OAUTH_SCOPE_OVERRIDE = [
+            scope.strip() for scope in _GOOGLE_OAUTH_SCOPE_OVERRIDE.split(",")
+        ]
+    except Exception:
+        logger.exception(
+            "Error configuring Google OAuth login scopes: %s",
+            _GOOGLE_OAUTH_SCOPE_OVERRIDE,
+        )
 
 # OpenID Connect configuration URL for OIDC integrations
 OPENID_CONFIG_URL = os.environ.get("OPENID_CONFIG_URL") or ""
@@ -231,10 +292,15 @@ SMTP_SERVER = os.environ.get("SMTP_SERVER") or ""
 SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
 SMTP_USER = os.environ.get("SMTP_USER") or ""
 SMTP_PASS = os.environ.get("SMTP_PASS") or ""
+SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in (
+    "false",
+    "0",
+    "no",
+)
 EMAIL_FROM = os.environ.get("EMAIL_FROM") or SMTP_USER
 
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY") or ""
-EMAIL_CONFIGURED = all([SMTP_SERVER, SMTP_USER, SMTP_PASS]) or SENDGRID_API_KEY
+EMAIL_CONFIGURED = (bool(SMTP_SERVER) and bool(EMAIL_FROM)) or bool(SENDGRID_API_KEY)
 
 # If set, Onyx will listen to the `expires_at` returned by the identity
 # provider (e.g. Okta, Google, etc.) and force the user to re-authenticate
@@ -271,15 +337,14 @@ OPENSEARCH_ADMIN_USERNAME = os.environ.get("OPENSEARCH_ADMIN_USERNAME", "admin")
 OPENSEARCH_ADMIN_PASSWORD = os.environ.get(
     "OPENSEARCH_ADMIN_PASSWORD", "StrongPassword123!"
 )
+OPENSEARCH_USE_SSL = os.environ.get("OPENSEARCH_USE_SSL", "true").lower() == "true"
 USING_AWS_MANAGED_OPENSEARCH = (
     os.environ.get("USING_AWS_MANAGED_OPENSEARCH", "").lower() == "true"
 )
 # Profiling adds some overhead to OpenSearch operations. This overhead is
-# unknown right now. It is enabled by default so we can get useful logs for
-# investigating slow queries. We may never disable it if the overhead is
-# minimal.
+# unknown right now. Defaults to True.
 OPENSEARCH_PROFILING_DISABLED = (
-    os.environ.get("OPENSEARCH_PROFILING_DISABLED", "").lower() == "true"
+    os.environ.get("OPENSEARCH_PROFILING_DISABLED", "true").lower() == "true"
 )
 # Whether to disable match highlights for OpenSearch. Defaults to True for now
 # as we investigate query performance.
@@ -315,6 +380,10 @@ ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX = (
     ENABLE_OPENSEARCH_INDEXING_FOR_ONYX
     and os.environ.get("ENABLE_OPENSEARCH_RETRIEVAL_FOR_ONYX", "").lower() == "true"
 )
+DISABLE_OPENSEARCH_MIGRATION_TASK = (
+    os.environ.get("DISABLE_OPENSEARCH_MIGRATION_TASK", "").lower() == "true"
+)
+ONYX_DISABLE_VESPA = os.environ.get("ONYX_DISABLE_VESPA", "true").lower() == "true"
 # Whether we should check for and create an index if necessary every time we
 # instantiate an OpenSearchDocumentIndex on multitenant cloud. Defaults to True.
 VERIFY_CREATE_OPENSEARCH_INDEX_ON_INIT_MT = (
@@ -334,6 +403,10 @@ OPENSEARCH_INDEX_NUM_REPLICAS: int | None = (
     int(os.environ["OPENSEARCH_INDEX_NUM_REPLICAS"])
     if os.environ.get("OPENSEARCH_INDEX_NUM_REPLICAS", None) is not None
     else None
+)
+ONYX_SEARCH_UI_USES_OPENSEARCH_KEYWORD_SEARCH = (
+    os.environ.get("ONYX_SEARCH_UI_USES_OPENSEARCH_KEYWORD_SEARCH", "").lower()
+    == "true"
 )
 
 VESPA_HOST = os.environ.get("VESPA_HOST") or "localhost"
@@ -366,6 +439,14 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST") or "127.0.0.1"
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT") or "5432"
 POSTGRES_DB = os.environ.get("POSTGRES_DB") or "postgres"
 AWS_REGION_NAME = os.environ.get("AWS_REGION_NAME") or "us-east-2"
+# Comma-separated replica / multi-host list. If unset, defaults to POSTGRES_HOST
+# only.
+_POSTGRES_HOSTS_STR = os.environ.get("POSTGRES_HOSTS", "").strip()
+POSTGRES_HOSTS: list[str] = (
+    [h.strip() for h in _POSTGRES_HOSTS_STR.split(",") if h.strip()]
+    if _POSTGRES_HOSTS_STR
+    else [POSTGRES_HOST]
+)
 
 POSTGRES_API_SERVER_POOL_SIZE = int(
     os.environ.get("POSTGRES_API_SERVER_POOL_SIZE") or 40
@@ -385,8 +466,13 @@ POSTGRES_API_SERVER_READ_ONLY_POOL_OVERFLOW = int(
 # generally should only be used for
 POSTGRES_USE_NULL_POOL = os.environ.get("POSTGRES_USE_NULL_POOL", "").lower() == "true"
 
-# defaults to False
-POSTGRES_POOL_PRE_PING = os.environ.get("POSTGRES_POOL_PRE_PING", "").lower() == "true"
+# defaults to True — pre-pings pooled connections with SELECT 1 at checkout
+# to avoid `psycopg2.OperationalError: server closed the connection
+# unexpectedly` when PgBouncer / Postgres drops an idle connection that's
+# still in the pool. Set POSTGRES_POOL_PRE_PING=false to opt out.
+POSTGRES_POOL_PRE_PING = (
+    os.environ.get("POSTGRES_POOL_PRE_PING", "true").lower() == "true"
+)
 
 # recycle timeout in seconds
 POSTGRES_POOL_RECYCLE_DEFAULT = 60 * 20  # 20 minutes
@@ -396,6 +482,32 @@ try:
     )
 except ValueError:
     POSTGRES_POOL_RECYCLE = POSTGRES_POOL_RECYCLE_DEFAULT
+
+# TCP keepalive settings for the sync psycopg2 engine.
+#
+# When PgBouncer (or any intermediary — NLB, NAT, firewall) silently closes
+# an idle TCP connection that's still parked in the SQLAlchemy pool,
+# `pool_pre_ping`'s `SELECT 1` can succeed (sub-ms) and then the very next
+# real query fails mid-flight with
+# `(psycopg2.OperationalError) server closed the connection unexpectedly`.
+# Enabling TCP keepalives causes the kernel to send periodic probes on
+# idle sockets, which (a) keeps the path warm so PgBouncer never sees it
+# as idle, and (b) detects dead sockets before SQLAlchemy tries to use
+# them, letting the pool invalidate them cleanly.
+#
+# Defaults are tuned so the first probe fires well under typical
+# intermediary idle timeouts (PgBouncer `server_idle_timeout` 600s, AWS
+# NLB idle 350s). Set `POSTGRES_TCP_KEEPALIVES=false` to opt out.
+POSTGRES_TCP_KEEPALIVES = (
+    os.environ.get("POSTGRES_TCP_KEEPALIVES", "true").lower() == "true"
+)
+POSTGRES_TCP_KEEPALIVES_IDLE = int(os.environ.get("POSTGRES_TCP_KEEPALIVES_IDLE") or 30)
+POSTGRES_TCP_KEEPALIVES_INTERVAL = int(
+    os.environ.get("POSTGRES_TCP_KEEPALIVES_INTERVAL") or 10
+)
+POSTGRES_TCP_KEEPALIVES_COUNT = int(
+    os.environ.get("POSTGRES_TCP_KEEPALIVES_COUNT") or 5
+)
 
 # RDS IAM authentication - enables IAM-based authentication for PostgreSQL
 USE_IAM_AUTH = os.getenv("USE_IAM_AUTH", "False").lower() == "true"
@@ -536,6 +648,14 @@ CELERY_WORKER_USER_FILE_PROCESSING_CONCURRENCY = int(
     os.environ.get("CELERY_WORKER_USER_FILE_PROCESSING_CONCURRENCY") or 2
 )
 
+# Concurrency for the dedicated Craft scheduled-tasks worker. Each thread can
+# run one headless agent fire at a time, so this caps simultaneous in-flight
+# scheduled runs per pod. Default is intentionally modest because each fire
+# can be long-running (LLM + tool calls in a sandbox).
+CELERY_WORKER_SCHEDULED_TASKS_CONCURRENCY = int(
+    os.environ.get("CELERY_WORKER_SCHEDULED_TASKS_CONCURRENCY") or 4
+)
+
 # The maximum number of tasks that can be queued up to sync to Vespa in a single pass
 VESPA_SYNC_MAX_TASKS = 8192
 
@@ -575,6 +695,40 @@ WEB_CONNECTOR_OAUTH_CLIENT_ID = os.environ.get("WEB_CONNECTOR_OAUTH_CLIENT_ID")
 WEB_CONNECTOR_OAUTH_CLIENT_SECRET = os.environ.get("WEB_CONNECTOR_OAUTH_CLIENT_SECRET")
 WEB_CONNECTOR_OAUTH_TOKEN_URL = os.environ.get("WEB_CONNECTOR_OAUTH_TOKEN_URL")
 WEB_CONNECTOR_VALIDATE_URLS = os.environ.get("WEB_CONNECTOR_VALIDATE_URLS")
+
+# When the OnyxWebCrawler (open_url tool) hits a 403 / Cloudflare challenge,
+# fall back to a one-shot Playwright (Chromium) render to bypass JS-based
+# bot detection. Disable to skip the fallback (e.g. on hosts that don't have
+# the Chromium binary installed).
+OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED = (
+    os.environ.get("OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED", "true").lower() == "true"
+)
+
+# Whether the open_url tool enforces SSRF protection (rejecting URLs that
+# resolve to private/internal IPs). Default true to keep multi-tenant SaaS
+# safe. Self-hosted operators on trusted networks (e.g. internal docs that
+# resolve to RFC1918 addresses via split-horizon DNS) can set to false to
+# allow fetching from private ranges.
+OPEN_URL_VALIDATE_SSRF = (
+    os.environ.get("OPEN_URL_VALIDATE_SSRF", "true").lower() == "true"
+)
+
+# Allow outbound MCP/OAuth calls (server_url, oauth endpoints) to resolve to
+# private/internal IPs. Default false to block SSRF; self-hosted operators with
+# an internal MCP server can opt in. Loopback/unspecified/link-local (incl.
+# cloud-metadata) stay blocked regardless.
+MCP_SERVER_ALLOW_PRIVATE_NETWORK = (
+    os.environ.get("MCP_SERVER_ALLOW_PRIVATE_NETWORK", "false").lower() == "true"
+)
+
+# Separately allow loopback (127.0.0.0/8, ::1) targets. Loopback reaches the app
+# host itself (its admin APIs, sidecars, other localhost services), so it stays
+# blocked even under MCP_SERVER_ALLOW_PRIVATE_NETWORK unless explicitly opted in.
+# Requires the private-network opt-in above to take effect. Used by our tests'
+# local mock MCP servers; cloud-metadata/link-local stay blocked regardless.
+MCP_SERVER_ALLOW_LOOPBACK = (
+    os.environ.get("MCP_SERVER_ALLOW_LOOPBACK", "false").lower() == "true"
+)
 
 HTML_BASED_CONNECTOR_TRANSFORM_LINKS_STRATEGY = os.environ.get(
     "HTML_BASED_CONNECTOR_TRANSFORM_LINKS_STRATEGY",
@@ -742,7 +896,7 @@ LEAVE_CONNECTOR_ACTIVE_ON_INITIALIZATION_FAILURE = (
     == "true"
 )
 
-DEFAULT_PRUNING_FREQ = 60 * 60 * 24  # Once a day
+DEFAULT_PRUNING_FREQ = 60 * 60 * 24 * 7  # 7 days
 
 ALLOW_SIMULTANEOUS_PRUNING = (
     os.environ.get("ALLOW_SIMULTANEOUS_PRUNING", "").lower() == "true"
@@ -768,6 +922,20 @@ ZENDESK_CONNECTOR_SKIP_ARTICLE_LABELS = os.environ.get(
 CONTINUE_ON_CONNECTOR_FAILURE = os.environ.get(
     "CONTINUE_ON_CONNECTOR_FAILURE", ""
 ).lower() not in ["false", ""]
+# When true, indexing makes a best effort to keep going past errors that it
+# can bound:
+#   1. The >3-failures-AND->10%-ratio threshold abort is disabled, so a
+#      connector that yields many per-doc/entity `ConnectorFailure`s no longer
+#      aborts the attempt.
+#   2. Unhandled exceptions inside docprocessing (per-batch) are converted into
+#      `DocumentFailure`s for the docs in the batch (or an `EntityFailure` if
+#      the batch couldn't be loaded). The batch is marked complete so the
+#      attempt can resolve as COMPLETED_WITH_ERRORS.
+# Does NOT swallow unhandled exceptions raised from the connector generator
+# itself: those still mark the attempt FAILED, because we have no entity
+# context to isolate the failing item and silently advancing would risk
+# skipping source data. Operators must triage those by fixing the connector.
+PERSISTENT_INDEXING = os.environ.get("PERSISTENT_INDEXING", "").lower() == "true"
 # When swapping to a new embedding model, a secondary index is created in the background, to conserve
 # resources, we pause updates on the primary index by default while the secondary index is created
 DISABLE_INDEX_UPDATE_ON_SWAP = (
@@ -790,6 +958,10 @@ MINI_CHUNK_SIZE = 150
 # This is the number of regular chunks per large chunk
 LARGE_CHUNK_RATIO = 4
 
+# The maximum number of chunks that can be held for 1 document processing batch
+# The purpose of this is to set an upper bound on memory usage
+MAX_CHUNKS_PER_DOC_BATCH = int(os.environ.get("MAX_CHUNKS_PER_DOC_BATCH") or 1000)
+
 # Include the document level metadata in each chunk. If the metadata is too long, then it is thrown out
 # We don't want the metadata to overwhelm the actual contents of the chunk
 SKIP_METADATA_IN_CHUNK = os.environ.get("SKIP_METADATA_IN_CHUNK", "").lower() == "true"
@@ -809,11 +981,45 @@ INDEXING_EMBEDDING_MODEL_NUM_THREADS = int(
     os.environ.get("INDEXING_EMBEDDING_MODEL_NUM_THREADS") or 8
 )
 
-# Maximum file size in a document to be indexed
-MAX_DOCUMENT_CHARS = int(os.environ.get("MAX_DOCUMENT_CHARS") or 5_000_000)
+# Maximum number of characters in a single document before it is skipped during indexing.
+# Documents exceeding this limit will surface a visible error rather than being silently dropped.
+# Default is 512MB worth of characters (536,870,912). Configurable via MAX_DOCUMENT_CHARS env var.
+MAX_DOCUMENT_CHARS = int(os.environ.get("MAX_DOCUMENT_CHARS") or 536_870_912)
 MAX_FILE_SIZE_BYTES = int(
     os.environ.get("MAX_FILE_SIZE_BYTES") or 2 * 1024 * 1024 * 1024
 )  # 2GB in bytes
+
+# Maximum embedded images allowed in a single file. PDFs (and other formats)
+# with thousands of embedded images can OOM the user-file-processing worker
+# because every image is decoded with PIL and then sent to the vision LLM.
+# Enforced both at upload time (rejects the file) and during extraction
+# (defense-in-depth: caps the number of images materialized).
+#
+# Clamped to >= 0; a negative env value would turn upload validation into
+# always-fail and extraction into always-stop, which is never desired. 0
+# disables image extraction entirely, which is a valid (if aggressive) setting.
+MAX_EMBEDDED_IMAGES_PER_FILE = max(
+    0, int(os.environ.get("MAX_EMBEDDED_IMAGES_PER_FILE") or 500)
+)
+
+# Maximum embedded images allowed across all files in a single upload batch.
+# Protects against the scenario where a user uploads many files that each
+# fall under MAX_EMBEDDED_IMAGES_PER_FILE but aggregate to enough work
+# (serial-ish celery fan-out plus per-image vision-LLM calls) to OOM the
+# worker under concurrency or run up surprise latency/cost. Also clamped
+# to >= 0.
+MAX_EMBEDDED_IMAGES_PER_UPLOAD = max(
+    0, int(os.environ.get("MAX_EMBEDDED_IMAGES_PER_UPLOAD") or 1000)
+)
+
+# Maximum non-empty cells to extract from a single xlsx worksheet. Protects
+# from OOM on honestly-huge spreadsheets: memory cost in the extractor is
+# roughly proportional to this count. Once exceeded, the scan stops and a
+# truncation marker row is appended to the sheet's CSV.
+# Peak Memory ~= 100 B * MAX_CELLS
+MAX_XLSX_CELLS_PER_SHEET = max(
+    0, int(os.environ.get("MAX_XLSX_CELLS_PER_SHEET") or 10_000_000)
+)
 
 # Use document summary for contextual rag
 USE_DOCUMENT_SUMMARY = os.environ.get("USE_DOCUMENT_SUMMARY", "true").lower() == "true"
@@ -852,11 +1058,17 @@ CODE_INTERPRETER_MAX_OUTPUT_LENGTH = int(
     os.environ.get("CODE_INTERPRETER_MAX_OUTPUT_LENGTH") or 50_000
 )
 
+# Per-call MCP read timeout; configurable since some tools (e.g. data-agent
+# servers) run longer than the default.
+MCP_TOOL_CALL_TIMEOUT_SECONDS = int(
+    os.environ.get("MCP_TOOL_CALL_TIMEOUT_SECONDS") or 300
+)
+
 
 #####
 # Miscellaneous
 #####
-JOB_TIMEOUT = 60 * 60 * 6  # 6 hours default
+JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT_SECONDS") or 60 * 60 * 6)  # default 6h
 # Logs Onyx only model interactions like prompts, responses, messages etc.
 LOG_ONYX_MODEL_INTERACTIONS = (
     os.environ.get("LOG_ONYX_MODEL_INTERACTIONS", "").lower() == "true"
@@ -865,6 +1077,13 @@ LOG_ONYX_MODEL_INTERACTIONS = (
 PROMPT_CACHE_CHAT_HISTORY = (
     os.environ.get("PROMPT_CACHE_CHAT_HISTORY", "").lower() == "true"
 )
+
+# Opt-in cap on outgoing image-count for Azure providers (any model_provider
+# starting with "azure"). When enabled, requests are capped at 50 images each
+# (matching the documented Azure OpenAI ceiling) to avoid raw 400s from the
+# gateway. Off by default.
+ENABLE_AZURE_IMAGE_CAP = os.environ.get("ENABLE_AZURE_IMAGE_CAP", "").lower() == "true"
+
 # If set to `true` will enable additional logs about Vespa query performance
 # (time spent on finding the right docs + time spent fetching summaries from disk)
 LOG_VESPA_TIMING_INFORMATION = (
@@ -923,8 +1142,19 @@ CUSTOM_ANSWER_VALIDITY_CONDITIONS = json.loads(
 )
 
 VESPA_REQUEST_TIMEOUT = int(os.environ.get("VESPA_REQUEST_TIMEOUT") or "15")
+# This is the timeout for the client side of the Vespa migration task. When
+# exceeded, an exception is raised in our code. This value should be higher than
+# VESPA_MIGRATION_SERVER_SIDE_REQUEST_TIMEOUT.
 VESPA_MIGRATION_REQUEST_TIMEOUT_S = int(
     os.environ.get("VESPA_MIGRATION_REQUEST_TIMEOUT_S") or "120"
+)
+# This is the timeout Vespa uses on the server side to know when to wrap up its
+# traversal and try to report partial results. This differs from the client
+# timeout above which raises an exception in our code when exceeded. This
+# timeout allows Vespa to return gracefully. This value should be lower than
+# VESPA_MIGRATION_REQUEST_TIMEOUT_S. Formatted as <number of seconds>s.
+VESPA_MIGRATION_SERVER_SIDE_REQUEST_TIMEOUT = os.environ.get(
+    "VESPA_MIGRATION_SERVER_SIDE_REQUEST_TIMEOUT", "110s"
 )
 
 SYSTEM_RECURSION_LIMIT = int(os.environ.get("SYSTEM_RECURSION_LIMIT") or "1000")
@@ -974,18 +1204,10 @@ ENTERPRISE_EDITION_ENABLED = (
 # To configure image generation, please visit the Image Generation page in the Admin Panel.
 #####
 # Azure Image Configurations
-AZURE_IMAGE_API_VERSION = os.environ.get("AZURE_IMAGE_API_VERSION") or os.environ.get(
-    "AZURE_DALLE_API_VERSION"
-)
-AZURE_IMAGE_API_KEY = os.environ.get("AZURE_IMAGE_API_KEY") or os.environ.get(
-    "AZURE_DALLE_API_KEY"
-)
-AZURE_IMAGE_API_BASE = os.environ.get("AZURE_IMAGE_API_BASE") or os.environ.get(
-    "AZURE_DALLE_API_BASE"
-)
-AZURE_IMAGE_DEPLOYMENT_NAME = os.environ.get(
-    "AZURE_IMAGE_DEPLOYMENT_NAME"
-) or os.environ.get("AZURE_DALLE_DEPLOYMENT_NAME")
+AZURE_IMAGE_API_VERSION = os.environ.get("AZURE_IMAGE_API_VERSION")
+AZURE_IMAGE_API_KEY = os.environ.get("AZURE_IMAGE_API_KEY")
+AZURE_IMAGE_API_BASE = os.environ.get("AZURE_IMAGE_API_BASE")
+AZURE_IMAGE_DEPLOYMENT_NAME = os.environ.get("AZURE_IMAGE_DEPLOYMENT_NAME")
 
 # configurable image model
 IMAGE_MODEL_NAME = os.environ.get("IMAGE_MODEL_NAME", "gpt-image-1")
@@ -995,6 +1217,12 @@ IMAGE_MODEL_PROVIDER = os.environ.get("IMAGE_MODEL_PROVIDER", "openai")
 MANAGED_VESPA = os.environ.get("MANAGED_VESPA", "").lower() == "true"
 
 ENABLE_EMAIL_INVITES = os.environ.get("ENABLE_EMAIL_INVITES", "").lower() == "true"
+
+# When true, GET /users is restricted to callers with READ_USERS so non-admins
+# cannot enumerate the tenant directory. Off by default to preserve sharing UX.
+USER_DIRECTORY_ADMIN_ONLY = (
+    os.environ.get("USER_DIRECTORY_ADMIN_ONLY", "").lower() == "true"
+)
 
 # Limit on number of users a free trial tenant can invite (cloud only)
 NUM_FREE_TRIAL_USER_INVITES = int(os.environ.get("NUM_FREE_TRIAL_USER_INVITES", "10"))
@@ -1041,7 +1269,7 @@ API_KEY_HASH_ROUNDS = (
 # MCP Server Configs
 #####
 MCP_SERVER_ENABLED = os.environ.get("MCP_SERVER_ENABLED", "").lower() == "true"
-MCP_SERVER_HOST = os.environ.get("MCP_SERVER_HOST", "0.0.0.0")
+MCP_SERVER_HOST = os.environ.get("MCP_SERVER_HOST", "0.0.0.0")  # noqa: S104 — server bind address; intentional default for containerized deployment
 MCP_SERVER_PORT = int(os.environ.get("MCP_SERVER_PORT") or 8090)
 
 # CORS origins for MCP clients (comma-separated)
@@ -1060,7 +1288,6 @@ POD_NAMESPACE = os.environ.get("POD_NAMESPACE")
 
 DEV_MODE = os.environ.get("DEV_MODE", "").lower() == "true"
 
-HOOK_ENABLED = os.environ.get("HOOK_ENABLED", "").lower() == "true"
 
 INTEGRATION_TESTS_MODE = os.environ.get("INTEGRATION_TESTS_MODE", "").lower() == "true"
 
@@ -1070,12 +1297,25 @@ INTEGRATION_TESTS_MODE = os.environ.get("INTEGRATION_TESTS_MODE", "").lower() ==
 # Enable captcha verification for new user registration
 CAPTCHA_ENABLED = os.environ.get("CAPTCHA_ENABLED", "").lower() == "true"
 
-# Google reCAPTCHA secret key (server-side validation)
-RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY", "")
-
-# Minimum score threshold for reCAPTCHA v3 (0.0-1.0, higher = more likely human)
-# 0.5 is the recommended default
+RECAPTCHA_ENTERPRISE_PROJECT_ID = os.environ.get("RECAPTCHA_ENTERPRISE_PROJECT_ID", "")
+RECAPTCHA_ENTERPRISE_API_KEY = os.environ.get("RECAPTCHA_ENTERPRISE_API_KEY", "")
+RECAPTCHA_SITE_KEY = os.environ.get("RECAPTCHA_SITE_KEY", "")
+RECAPTCHA_HOSTNAME_ALLOWLIST = frozenset(
+    h.strip()
+    for h in os.environ.get("RECAPTCHA_HOSTNAME_ALLOWLIST", "").split(",")
+    if h.strip()
+)
 RECAPTCHA_SCORE_THRESHOLD = float(os.environ.get("RECAPTCHA_SCORE_THRESHOLD", "0.5"))
+
+# Shared secret for automated health-check clients (e.g. BetterStack Playwright)
+# to bypass login captcha. Empty value = bypass disabled (fail-closed). Sent by
+# the client as the `X-Healthcheck-Token` header and compared constant-time.
+HEALTH_CHECK_BYPASS_TOKEN = os.environ.get("HEALTH_CHECK_BYPASS_TOKEN", "")
+
+# Opt-in per-IP rate limit on /auth/register.
+SIGNUP_RATE_LIMIT_ENABLED = (
+    os.environ.get("SIGNUP_RATE_LIMIT_ENABLED", "").lower() == "true"
+)
 
 MOCK_CONNECTOR_FILE_PATH = os.environ.get("MOCK_CONNECTOR_FILE_PATH")
 
@@ -1089,6 +1329,32 @@ DEFAULT_IMAGE_ANALYSIS_MAX_SIZE_MB = 20
 
 # Number of pre-provisioned tenants to maintain
 TARGET_AVAILABLE_TENANTS = int(os.environ.get("TARGET_AVAILABLE_TENANTS", "5"))
+
+# Master switch for the tenant work-gating feature. Controls the `enabled`
+# axis only — flipping this True puts the feature in shadow mode (compute
+# the gate, log skip counts, but do not actually skip). The `enforce` axis
+# is Redis-only with a hard-coded default of False, so this env flag alone
+# cannot cause real tenants to be skipped. Default off.
+ENABLE_TENANT_WORK_GATING = (
+    os.environ.get("ENABLE_TENANT_WORK_GATING", "").lower() == "true"
+)
+
+# Membership TTL for the `active_tenants` sorted set. Members older than this
+# are treated as inactive by the gate read path. Must be > the full-fanout
+# interval so self-healing re-adds a genuinely-working tenant before their
+# membership expires. Default 30 min.
+TENANT_WORK_GATING_TTL_SECONDS = int(
+    os.environ.get("TENANT_WORK_GATING_TTL_SECONDS", 30 * 60)
+)
+
+# Minimum wall-clock interval between full-fanout cycles. When this many
+# seconds have elapsed since the last bypass, the generator ignores the gate
+# on the next invocation and dispatches to every non-gated tenant, letting
+# consumers re-populate the active set. Schedule-independent so beat drift
+# or backlog can't make the self-heal bursty or sparse. Default 20 min.
+TENANT_WORK_GATING_FULL_FANOUT_INTERVAL_SECONDS = int(
+    os.environ.get("TENANT_WORK_GATING_FULL_FANOUT_INTERVAL_SECONDS", 20 * 60)
+)
 
 
 # Image summarization configuration
@@ -1130,6 +1396,17 @@ S3_GENERATE_LOCAL_CHECKSUM = (
     os.environ.get("S3_GENERATE_LOCAL_CHECKSUM", "").lower() == "true"
 )
 
+# GCS (Google Cloud Storage) Configuration
+GCS_FILE_STORE_BUCKET_NAME = os.environ.get("GCS_FILE_STORE_BUCKET_NAME") or None
+GCS_FILE_STORE_PREFIX = os.environ.get("GCS_FILE_STORE_PREFIX") or "onyx-files"
+GCS_PROJECT_ID = os.environ.get("GCS_PROJECT_ID") or None
+# Path to a service account JSON key file. When empty/unset, Application Default
+# Credentials (ADC) are used — supports GKE Workload Identity, Compute Engine
+# metadata service, and local `gcloud auth application-default login`.
+GCS_SERVICE_ACCOUNT_KEY_PATH = os.environ.get("GCS_SERVICE_ACCOUNT_KEY_PATH") or None
+# Service account key as inline JSON string (alternative to file path).
+GCS_SERVICE_ACCOUNT_KEY_JSON = os.environ.get("GCS_SERVICE_ACCOUNT_KEY_JSON") or None
+
 # Forcing Vespa Language
 # English: en, German:de, etc. See: https://docs.vespa.ai/en/linguistics.html
 VESPA_LANGUAGE_OVERRIDE = os.environ.get("VESPA_LANGUAGE_OVERRIDE")
@@ -1145,11 +1422,47 @@ COHERE_DEFAULT_API_KEY = os.environ.get("COHERE_DEFAULT_API_KEY")
 VERTEXAI_DEFAULT_CREDENTIALS = os.environ.get("VERTEXAI_DEFAULT_CREDENTIALS")
 VERTEXAI_DEFAULT_LOCATION = os.environ.get("VERTEXAI_DEFAULT_LOCATION", "global")
 OPENROUTER_DEFAULT_API_KEY = os.environ.get("OPENROUTER_DEFAULT_API_KEY")
+# Whether tenant provisioning auto-creates LLMProvider rows seeded with the
+# *_DEFAULT_API_KEY env vars above. Defaults to True so self-hosted
+# deployments keep the existing behavior. Cloud sets this to False to
+# require new tenants to bring their own LLM keys.
+AUTO_PROVISION_DEFAULT_LLM_PROVIDERS = (
+    os.environ.get("AUTO_PROVISION_DEFAULT_LLM_PROVIDERS", "true").lower() == "true"
+)
+
+# Auto-create Onyx-managed built-in external app rows (disabled, Onyx-owned creds)
+# per tenant. Default False; set True on cloud so tenants can enable built-ins
+# without registering their own OAuth app.
+AUTO_PROVISION_DEFAULT_EXTERNAL_APPS = (
+    os.environ.get("AUTO_PROVISION_DEFAULT_EXTERNAL_APPS", "false").lower() == "true"
+)
+
+# Onyx-owned OAuth credentials for built-in external apps (managed cloud)
+EXT_APP_SLACK_CLIENT_ID = os.environ.get("EXT_APP_SLACK_CLIENT_ID", "")
+EXT_APP_SLACK_CLIENT_SECRET = os.environ.get("EXT_APP_SLACK_CLIENT_SECRET", "")
+EXT_APP_GMAIL_CLIENT_ID = os.environ.get("EXT_APP_GMAIL_CLIENT_ID", "")
+EXT_APP_GMAIL_CLIENT_SECRET = os.environ.get("EXT_APP_GMAIL_CLIENT_SECRET", "")
+EXT_APP_GOOGLE_CALENDAR_CLIENT_ID = os.environ.get(
+    "EXT_APP_GOOGLE_CALENDAR_CLIENT_ID", ""
+)
+EXT_APP_GOOGLE_CALENDAR_CLIENT_SECRET = os.environ.get(
+    "EXT_APP_GOOGLE_CALENDAR_CLIENT_SECRET", ""
+)
+EXT_APP_GOOGLE_DRIVE_CLIENT_ID = os.environ.get("EXT_APP_GOOGLE_DRIVE_CLIENT_ID", "")
+EXT_APP_GOOGLE_DRIVE_CLIENT_SECRET = os.environ.get(
+    "EXT_APP_GOOGLE_DRIVE_CLIENT_SECRET", ""
+)
+EXT_APP_LINEAR_CLIENT_ID = os.environ.get("EXT_APP_LINEAR_CLIENT_ID", "")
+EXT_APP_LINEAR_CLIENT_SECRET = os.environ.get("EXT_APP_LINEAR_CLIENT_SECRET", "")
+EXT_APP_GITHUB_CLIENT_ID = os.environ.get("EXT_APP_GITHUB_CLIENT_ID", "")
+EXT_APP_GITHUB_CLIENT_SECRET = os.environ.get("EXT_APP_GITHUB_CLIENT_SECRET", "")
 
 INSTANCE_TYPE = (
     "managed"
     if os.environ.get("IS_MANAGED_INSTANCE", "").lower() == "true"
-    else "cloud" if AUTH_TYPE == AuthType.CLOUD else "self_hosted"
+    else "cloud"
+    if AUTH_TYPE == AuthType.CLOUD
+    else "self_hosted"
 )
 
 

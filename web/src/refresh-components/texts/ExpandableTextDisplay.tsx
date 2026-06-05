@@ -3,11 +3,11 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import Modal from "@/refresh-components/Modal";
-import CopyIconButton from "@/refresh-components/buttons/CopyIconButton";
+import { CopyButton } from "@opal/components";
 import Text from "@/refresh-components/texts/Text";
 import { SvgDownload, SvgMaximize2, SvgX } from "@opal/icons";
 import { Button } from "@opal/components";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 
 export interface ExpandableTextDisplayProps {
   /** Title shown in header and modal */
@@ -239,7 +239,7 @@ export default function ExpandableTextDisplay({
       return (
         <div>
           {isTruncated && (
-            <Text as="p" text03 mainUiMuted className="!my-0">
+            <Text as="p" text03 mainUiMuted className="my-0!">
               …
             </Text>
           )}
@@ -321,7 +321,7 @@ export default function ExpandableTextDisplay({
 
       {/* Expanded Modal */}
       <Modal open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <Modal.Content height="lg" width="md-sm" preventAccidentalClose={false}>
+        <Modal.Content height="lg" width="lg" preventAccidentalClose={false}>
           {/* Header */}
           <div className="flex items-start justify-between px-4 py-3">
             <div className="flex flex-col">
@@ -365,7 +365,7 @@ export default function ExpandableTextDisplay({
               </Text>
             </div>
             <div className="flex items-center gap-1 bg-background-tint-00 p-1 rounded-12">
-              <CopyIconButton
+              <CopyButton
                 prominence="tertiary"
                 size="sm"
                 getCopyText={() => content}

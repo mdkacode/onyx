@@ -9,14 +9,17 @@ from onyx.context.search.models import ChunkSearchRequest
 from onyx.context.search.models import IndexFilters
 from onyx.context.search.models import InferenceChunk
 from onyx.context.search.models import InferenceSection
+from onyx.context.search.models import PersonaSearchInfo
 from onyx.context.search.preprocessing.access_filters import (
     build_access_filters_for_user,
 )
 from onyx.context.search.retrieval.search_runner import search_chunks
 from onyx.context.search.utils import inference_section_from_chunks
-from onyx.db.models import Persona
+from onyx.db.document_set import filter_document_set_names_by_user_access
 from onyx.db.models import User
-from onyx.document_index.interfaces import DocumentIndex
+from onyx.document_index.interfaces_new import DocumentIndex
+from onyx.error_handling.error_codes import OnyxErrorCode
+from onyx.error_handling.exceptions import OnyxError
 from onyx.federated_connectors.federated_retrieval import FederatedRetrievalInfo
 from onyx.llm.interfaces import LLM
 from onyx.natural_language_processing.english_stopwords import strip_stopwords
@@ -57,6 +60,30 @@ def _build_index_filters(
         raise RuntimeError("LLM and query are required for auto detect filters")
 
     base_filters = user_provided_filters or BaseFilters()
+
+    # When the caller supplies document set names, enforce that the user has view
+    # access to each one. This closes the API-layer bypass where a user could
+    # override the persona's configured document sets with arbitrary names.
+    # Skipped when bypass_acl is set (system callers) or when no db_session is
+    # available for the lookup.
+    if (
+        base_filters.document_set is not None
+        and not bypass_acl
+        and db_session is not None
+    ):
+        accessible_names = filter_document_set_names_by_user_access(
+            db_session=db_session,
+            document_set_names=base_filters.document_set,
+            user=user,
+        )
+        unauthorized = sorted(
+            name for name in base_filters.document_set if name not in accessible_names
+        )
+        if unauthorized:
+            raise OnyxError(
+                OnyxErrorCode.INSUFFICIENT_PERMISSIONS,
+                f"User does not have access to document sets: {unauthorized}",
+            )
 
     document_set_filter = (
         base_filters.document_set
@@ -247,8 +274,8 @@ def search_pipeline(
     document_index: DocumentIndex,
     # Used for ACLs and federated search, anonymous users only see public docs
     user: User,
-    # Used for default filters and settings
-    persona: Persona | None,
+    # Pre-extracted persona search configuration (None when no persona)
+    persona_search_info: PersonaSearchInfo | None,
     db_session: Session | None = None,
     auto_detect_filters: bool = False,
     llm: LLM | None = None,
@@ -263,24 +290,18 @@ def search_pipeline(
     prefetched_federated_retrieval_infos: list[FederatedRetrievalInfo] | None = None,
 ) -> list[InferenceChunk]:
     persona_document_sets: list[str] | None = (
-        [persona_document_set.name for persona_document_set in persona.document_sets]
-        if persona
-        else None
+        persona_search_info.document_set_names if persona_search_info else None
     )
     persona_time_cutoff: datetime | None = (
-        persona.search_start_date if persona else None
+        persona_search_info.search_start_date if persona_search_info else None
     )
-
-    # Extract assistant knowledge filters from persona
     attached_document_ids: list[str] | None = (
-        [doc.id for doc in persona.attached_documents]
-        if persona and persona.attached_documents
+        persona_search_info.attached_document_ids or None
+        if persona_search_info
         else None
     )
     hierarchy_node_ids: list[int] | None = (
-        [node.id for node in persona.hierarchy_nodes]
-        if persona and persona.hierarchy_nodes
-        else None
+        persona_search_info.hierarchy_node_ids or None if persona_search_info else None
     )
 
     filters = _build_index_filters(

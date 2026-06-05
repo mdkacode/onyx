@@ -3,7 +3,6 @@
 import { toast } from "@/hooks/useToast";
 import { basicLogin, basicSignup } from "@/lib/user";
 import { Button } from "@opal/components";
-import { Disabled } from "@opal/core";
 import { Form, Formik } from "formik";
 import * as Yup from "yup";
 import { requestEmailVerification } from "../lib";
@@ -13,13 +12,13 @@ import Link from "next/link";
 import { useUser } from "@/providers/UserProvider";
 import { FormikField } from "@/refresh-components/form/FormikField";
 import { FormField } from "@/refresh-components/form/FormField";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
+import { InputTypeIn } from "@opal/components";
 import PasswordInputTypeIn from "@/refresh-components/inputs/PasswordInputTypeIn";
 import { validateInternalRedirect } from "@/lib/auth/redirectValidation";
 import { APIFormFieldState } from "@/refresh-components/form/types";
 import { SvgArrowRightCircle } from "@opal/icons";
 import { useCaptcha } from "@/lib/hooks/useCaptcha";
-import Spacer from "@/refresh-components/Spacer";
+import { Spacer } from "@opal/components";
 
 interface EmailPasswordFormProps {
   isSignup?: boolean;
@@ -131,7 +130,12 @@ export default function EmailPasswordForm({
             }
           }
 
-          const loginResponse = await basicLogin(email, values.password);
+          const loginCaptchaToken = await getCaptchaToken("login");
+          const loginResponse = await basicLogin(
+            email,
+            values.password,
+            loginCaptchaToken
+          );
           if (loginResponse.ok) {
             setApiStatus("success");
             if (isSignup && shouldVerify) {
@@ -190,10 +194,9 @@ export default function EmailPasswordForm({
                           field.onChange(e);
                         }}
                         placeholder="email@yourcompany.com"
-                        onClear={() => helper.setValue("")}
                         data-testid="email"
+                        autoComplete="username"
                         variant={apiStatus === "error" ? "error" : undefined}
-                        showClearButton={false}
                       />
                     </FormField.Control>
                   </FormField>
@@ -216,11 +219,12 @@ export default function EmailPasswordForm({
                           }
                           field.onChange(e);
                         }}
-                        placeholder="∗∗∗∗∗∗∗∗∗∗∗∗∗∗"
-                        onClear={() => helper.setValue("")}
+                        placeholder="●●●●●●●●●●●●●●"
                         data-testid="password"
+                        autoComplete={
+                          isSignup ? "new-password" : "current-password"
+                        }
                         error={apiStatus === "error"}
-                        showClearButton={false}
                       />
                     </FormField.Control>
                     {isSignup && !showApiMessage && (
@@ -243,15 +247,14 @@ export default function EmailPasswordForm({
               />
 
               <Spacer rem={0.25} />
-              <Disabled disabled={isSubmitting || !isValid || !dirty}>
-                <Button
-                  type="submit"
-                  width="full"
-                  rightIcon={SvgArrowRightCircle}
-                >
-                  {isJoin ? "Join" : isSignup ? "Create Account" : "Sign In"}
-                </Button>
-              </Disabled>
+              <Button
+                disabled={isSubmitting || !isValid || !dirty}
+                type="submit"
+                width="full"
+                rightIcon={SvgArrowRightCircle}
+              >
+                {isJoin ? "Join" : isSignup ? "Create Account" : "Sign In"}
+              </Button>
               {user?.is_anonymous_user && (
                 <Link
                   href="/app"

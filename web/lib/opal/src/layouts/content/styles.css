@@ -1,3 +1,57 @@
+@reference "#reference.css";
+
+/* ===========================================================================
+   Content — Shared color properties
+
+   Two registered CSS custom properties drive all Content title + icon colors.
+   The `data-content-color` attribute on the Content dispatcher's wrapper div
+   selects the color mode. Since the properties use `inherits: true`, all
+   descendant layout elements pick up the values automatically.
+
+   @property registration enables hardware-accelerated color interpolation
+   on the parent — children just read the variable with no independent
+   transitions, guaranteeing perfect sync with Interactive's transitions.
+   =========================================================================== */
+
+@property --content-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --content-foreground-icon {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Color modes — driven by `data-content-color` on the dispatcher wrapper
+   --------------------------------------------------------------------------- */
+
+[data-content-color="default"] {
+  --content-foreground: var(--text-04);
+  --content-foreground-icon: var(--text-04);
+  color: var(--content-foreground);
+}
+
+[data-content-color="muted"] {
+  --content-foreground: var(--text-03);
+  --content-foreground-icon: var(--text-03);
+  color: var(--content-foreground);
+}
+
+[data-content-color="danger"] {
+  --content-foreground: var(--status-error-05);
+  --content-foreground-icon: var(--status-error-05);
+  color: var(--content-foreground);
+}
+
+[data-content-color="interactive"] {
+  color: inherit;
+  --content-foreground-icon: var(--interactive-foreground-icon);
+}
+
 /* ===========================================================================
    Content — ContentXl
 
@@ -30,28 +84,15 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-xl-icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @apply flex items-center justify-center p-0.5;
 }
 
 .opal-content-xl-more-icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @apply flex items-center justify-center p-0.5;
 }
 
 .opal-content-xl-icon {
-  color: var(--text-04);
-}
-
-/* ---------------------------------------------------------------------------
-   Body column
-   --------------------------------------------------------------------------- */
-
-.opal-content-xl-body {
-  @apply flex flex-1 flex-col items-start;
-  min-width: 0.0625rem;
+  color: var(--content-foreground-icon);
 }
 
 /* ---------------------------------------------------------------------------
@@ -61,14 +102,6 @@
 .opal-content-xl-title-row {
   @apply flex items-center w-full;
   gap: 0.25rem;
-}
-
-.opal-content-xl-title {
-  @apply text-left overflow-hidden text-text-04;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  padding: 0 0.125rem;
   min-width: 0.0625rem;
 }
 
@@ -110,7 +143,6 @@
 
 .opal-content-xl-description {
   @apply text-left w-full;
-  padding: 0 0.125rem;
 }
 
 /* ===========================================================================
@@ -127,7 +159,16 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-lg {
-  @apply flex flex-row items-start;
+  @apply flex flex-col items-start;
+}
+
+/* ---------------------------------------------------------------------------
+   Header row — icon beside title (flex-row)
+   --------------------------------------------------------------------------- */
+
+.opal-content-lg-header {
+  @apply flex flex-row items-start w-full;
+  gap: 0.125rem;
 }
 
 /* ---------------------------------------------------------------------------
@@ -135,22 +176,11 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-lg-icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @apply flex items-center justify-center p-0.5;
 }
 
 .opal-content-lg-icon {
-  color: var(--text-04);
-}
-
-/* ---------------------------------------------------------------------------
-   Body column
-   --------------------------------------------------------------------------- */
-
-.opal-content-lg-body {
-  @apply flex flex-1 flex-col items-start;
-  min-width: 0.0625rem;
+  color: var(--content-foreground-icon);
 }
 
 /* ---------------------------------------------------------------------------
@@ -160,14 +190,6 @@
 .opal-content-lg-title-row {
   @apply flex items-center w-full;
   gap: 0.25rem;
-}
-
-.opal-content-lg-title {
-  @apply text-left overflow-hidden text-text-04;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  padding: 0 0.125rem;
   min-width: 0.0625rem;
 }
 
@@ -209,14 +231,13 @@
 
 .opal-content-lg-description {
   @apply text-left w-full;
-  padding: 0 0.125rem;
 }
 
 /* ===========================================================================
    Content — ContentMd
 
-   Always inline (flex-row). Icon color varies per sizePreset and is applied
-   via Tailwind class from the component.
+   Always inline (flex-row). Icon color is set via the shared
+   `--content-foreground-icon` custom property.
    =========================================================================== */
 
 /* ---------------------------------------------------------------------------
@@ -224,7 +245,17 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-md {
-  @apply flex flex-row items-start;
+  @apply flex flex-col items-start;
+}
+
+.opal-content-md-header {
+  @apply flex flex-row items-center w-full;
+  gap: 0.125rem;
+}
+
+.opal-content-md-header[data-editing] {
+  @apply rounded-08;
+  box-shadow: inset 0 0 0 1px var(--border-02);
 }
 
 /* ---------------------------------------------------------------------------
@@ -232,18 +263,11 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-md-icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @apply flex items-center justify-center p-0.5;
 }
 
-/* ---------------------------------------------------------------------------
-   Body column
-   --------------------------------------------------------------------------- */
-
-.opal-content-md-body {
-  @apply flex flex-1 flex-col items-start;
-  min-width: 0.0625rem;
+.opal-content-md-icon {
+  color: var(--content-foreground-icon);
 }
 
 /* ---------------------------------------------------------------------------
@@ -255,18 +279,10 @@
   gap: 0.25rem;
 }
 
-.opal-content-md-title {
-  @apply text-left overflow-hidden text-text-04;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  padding: 0 0.125rem;
-  min-width: 0.0625rem;
-}
-
 .opal-content-md-input-sizer {
   display: inline-grid;
   align-items: stretch;
+  width: 100%;
 }
 
 .opal-content-md-input-sizer > * {
@@ -312,7 +328,6 @@
 
 .opal-content-md-description {
   @apply text-left w-full;
-  padding: 0 0.125rem;
 }
 
 /* ===========================================================================
@@ -323,8 +338,8 @@
      vertical: flex-col         — icon top, title below
      reverse : flex-row-reverse — title left, icon right
 
-   Icon color is always text-03. Title color varies by prominence
-   (text-04 default, text-03 muted, text-02 muted-2x) via data-prominence.
+   Colors are driven by the `data-content-color` attribute on the
+   Content dispatcher wrapper (see `color` prop on `<Content>`).
    =========================================================================== */
 
 /* ---------------------------------------------------------------------------
@@ -334,6 +349,7 @@
 .opal-content-sm {
   /* since `ContentSm` doesn't have a description, it's possible to center-align the icon and text */
   @apply flex items-center;
+  gap: 0.125rem;
 }
 
 .opal-content-sm[data-orientation="inline"] {
@@ -341,7 +357,7 @@
 }
 
 .opal-content-sm[data-orientation="vertical"] {
-  @apply flex-col;
+  @apply flex-col items-start;
 }
 
 .opal-content-sm[data-orientation="reverse"] {
@@ -353,81 +369,9 @@
    --------------------------------------------------------------------------- */
 
 .opal-content-sm-icon-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @apply flex items-center justify-center p-0.5;
 }
 
 .opal-content-sm-icon {
-  @apply text-text-03;
-}
-
-.opal-content-sm[data-prominence="muted"] .opal-content-sm-icon {
-  @apply text-text-02;
-}
-
-.opal-content-sm[data-prominence="muted-2x"] .opal-content-sm-icon {
-  @apply text-text-02;
-}
-
-/* ---------------------------------------------------------------------------
-   Title
-   --------------------------------------------------------------------------- */
-
-.opal-content-sm-title {
-  @apply text-left overflow-hidden text-text-04 truncate;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  padding: 0 0.125rem;
-  min-width: 0.0625rem;
-}
-
-.opal-content-sm[data-prominence="muted"] .opal-content-sm-title {
-  @apply text-text-03;
-}
-
-.opal-content-sm[data-prominence="muted-2x"] .opal-content-sm-title {
-  @apply text-text-02;
-}
-
-/* ===========================================================================
-   Interactive-foreground opt-in
-
-   When a Content variant is nested inside an Interactive and
-   `withInteractive` is set, the title and icon delegate their color to the
-   `--interactive-foreground` / `--interactive-foreground-icon` CSS variables
-   controlled by the ancestor Interactive variant.
-   =========================================================================== */
-
-.opal-content-xl[data-interactive] .opal-content-xl-title {
-  color: var(--interactive-foreground);
-}
-
-.opal-content-xl[data-interactive] .opal-content-xl-icon {
-  color: var(--interactive-foreground-icon);
-}
-
-.opal-content-lg[data-interactive] .opal-content-lg-title {
-  color: var(--interactive-foreground);
-}
-
-.opal-content-lg[data-interactive] .opal-content-lg-icon {
-  color: var(--interactive-foreground-icon);
-}
-
-.opal-content-md[data-interactive] .opal-content-md-title {
-  color: var(--interactive-foreground);
-}
-
-.opal-content-md[data-interactive] .opal-content-md-icon {
-  color: var(--interactive-foreground-icon);
-}
-
-.opal-content-sm[data-interactive] .opal-content-sm-title {
-  color: var(--interactive-foreground);
-}
-
-.opal-content-sm[data-interactive] .opal-content-sm-icon {
-  color: var(--interactive-foreground-icon);
+  color: var(--content-foreground-icon);
 }
