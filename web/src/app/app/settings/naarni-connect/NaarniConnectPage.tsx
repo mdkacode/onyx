@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Content } from "@opal/layouts";
-import { Button } from "@opal/components";
+import { Button, InputTypeIn } from "@opal/components";
 import { SvgPlug, SvgUnplug, SvgCheck, SvgArrowLeft } from "@opal/icons";
 import Card from "@/refresh-components/cards/Card";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import OtpInput from "@/refresh-components/inputs/OtpInput";
 import Text from "@/refresh-components/texts/Text";
 import { Section } from "@/layouts/general-layouts";

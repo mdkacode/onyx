@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Modal from "@/refresh-components/Modal";
 import { Section } from "@/layouts/general-layouts";
-import InputTypeIn from "@/refresh-components/inputs/InputTypeIn";
 import OtpInput from "@/refresh-components/inputs/OtpInput";
 import Text from "@/refresh-components/texts/Text";
-import { Button } from "@opal/components";
+import { Button, InputTypeIn } from "@opal/components";
 import { Disabled } from "@opal/core";
 import { SvgArrowLeft, SvgPlug } from "@opal/icons";
 import { toast } from "@/hooks/useToast";

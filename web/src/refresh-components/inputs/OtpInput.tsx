@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "@opal/utils";
 
 /**
  * OtpInput — a fixed-length, box-per-digit input for OTP / PIN codes.

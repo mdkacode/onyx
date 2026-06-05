@@ -43,7 +43,9 @@ def _get_valid_access_token(
     Returns the current access token if still valid, or refreshes it using
     the refresh_token if expired/expiring soon.
     """
-    access_token = oauth_token.token.get_value(apply_mask=False)
+    access_token = oauth_token.token.get_value(  # ty: ignore[unresolved-attribute]
+        apply_mask=False
+    )
 
     # Check if token is expired or about to expire
     if oauth_token.expires_at is not None:
@@ -65,7 +67,9 @@ def _get_valid_access_token(
                         f"Refreshing expired OAuth token for connector "
                         f"{oauth_token.federated_connector_id}"
                     )
-                    token_response = connector._refresh_access_token(refresh_token_val)
+                    token_response = connector._refresh_access_token(  # ty: ignore[call-non-callable]
+                        refresh_token_val
+                    )
                     new_access_token = token_response.get("access_token", "")
                     new_refresh_token = token_response.get("refresh_token")
                     new_expires_at = None

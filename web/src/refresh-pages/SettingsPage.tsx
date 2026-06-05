@@ -64,7 +64,7 @@ import {
 } from "@/lib/constants/chatBackgrounds";
 import { SvgCheck } from "@opal/icons";
 import { cn } from "@opal/utils";
-import { Interactive } from "@opal/core";
+import { Interactive, Disabled } from "@opal/core";
 import { useTierAtLeast } from "@/hooks/useTierAtLeast";
 import { Tier } from "@/interfaces/settings";
 import { useSettingsContext } from "@/providers/SettingsProvider";
@@ -2027,7 +2027,7 @@ function NaarniAccountCard() {
             description={`Connected as ${phoneNumber}`}
             sizePreset="main-content"
             variant="section"
-            paddingVariant="sm"
+            padding="sm"
             rightChildren={
               <Disabled disabled={isDisconnecting}>
                 <Button
@@ -2054,7 +2054,7 @@ function NaarniAccountCard() {
           description="Connect to chat with your fleet data"
           sizePreset="main-content"
           variant="section"
-          paddingVariant="sm"
+          padding="sm"
           rightChildren={
             <Button
               prominence="internal"
@@ -2087,7 +2087,7 @@ function NaarniAccountCard() {
           variant="section"
         />
 
-        {error && <Text className="text-status-error-text-01">{error}</Text>}
+        {error && <Text color="status-error-05">{error}</Text>}
 
         {step === "phone" && (
           <Section gap={0.5}>
@@ -2137,7 +2137,9 @@ function NaarniAccountCard() {
           </Section>
         )}
 
-        {step === "connecting" && <Text text03>Connecting to Naarni...</Text>}
+        {step === "connecting" && (
+          <Text color="text-03">Connecting to Naarni...</Text>
+        )}
       </Section>
     </Card>
   );
@@ -2192,7 +2194,6 @@ function ConnectorsSettings() {
           title="Fleet Integration"
           sizePreset="main-content"
           variant="section"
-          widthVariant="full"
         />
         <NaarniAccountCard />
       </Section>
