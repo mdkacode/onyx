@@ -1,30 +1,37 @@
 # ============================================================================
 # NaArNi — Scheduled VM Resize (Cost Optimization)
 # ============================================================================
-# Resizes the Azure VM on a daily schedule:
-#   - 9:55 AM IST (4:25 UTC) → E4s_v5 (4 vCPU, 32 GB) for business hours
-#   - 7:05 PM IST (13:35 UTC) → E2s_v5 (2 vCPU, 16 GB) for off-hours
+# Keeps ai.naarni.com UP 24/7 but resizes the Azure VM on a schedule:
+#   - Mon–Fri 09:00 IST (03:30 UTC) → E8s_v5 (8 vCPU, 64 GB)  — work hours
+#   - Mon–Fri 19:00 IST (13:30 UTC) → E4s_v5 (4 vCPU, 32 GB)  — off-hours
+#   - Weekends: stays at E4s_v5 (no cron runs Sat/Sun)
 #
-# Monthly cost: ~$152/mo (down from $380/mo)
-# Downtime: ~3 min per resize (before/after work hours)
+# SAFETY (do not "optimize" these away — see deployment/VM-RESIZE-OPS.md):
+#   * Off-hours floor is E4s_v5 (32 GB). NEVER E2s_v5 (16 GB): OpenSearch's JVM
+#     + the embedding model server will OOM below 32 GB.
+#   * App containers are gracefully stopped BEFORE deallocate, then brought back
+#     up after the VM restarts. Volumes (Postgres/Redis/OpenSearch/file store)
+#     are never touched. No `down -v`, ever.
+#   * Public IP must stay Static (deallocate would change a Dynamic IP).
 #
 # Required GitHub Secrets:
-#   AZURE_CREDENTIALS — JSON output from: az ad sp create-for-rbac
-#                       (needs VM Contributor on the VM resource)
+#   AZURE_CREDENTIALS — SP JSON (az ad sp create-for-rbac), VM Contributor on the RG
+#   VM_HOST           — VM public IP (52.140.124.116)
+#   VM_USER           — SSH user (naarni)
+#   VM_SSH_KEY        — SSH private key
 #
-# If you can't create a service principal (Contributor-only role),
-# use the manual alternative: run from your Mac via crontab.
-# See bottom of file for instructions.
+# Test before trusting the schedule:
+#   GitHub → Actions → "NaArNi VM - Scheduled Resize" → Run workflow → pick a size.
 # ============================================================================
 
 name: NaArNi VM - Scheduled Resize
 
 on:
   schedule:
-    # 9:55 AM IST = 4:25 AM UTC (scale UP for business hours)
-    - cron: '25 4 * * *'
-    # 7:05 PM IST = 1:35 PM UTC (scale DOWN for off-hours)
-    - cron: '35 13 * * *'
+    # 09:00 IST = 03:30 UTC (Mon–Fri) → scale UP to E8s_v5
+    - cron: '30 3 * * 1-5'
+    # 19:00 IST = 13:30 UTC (Mon–Fri) → scale DOWN to E4s_v5
+    - cron: '30 13 * * 1-5'
   workflow_dispatch:
     inputs:
       target_size:
@@ -33,99 +40,221 @@ on:
         default: 'Standard_E4s_v5'
         type: choice
         options:
-          - Standard_E4s_v5
-          - Standard_E2s_v5
-          - Standard_E8s_v5
+          - Standard_E8s_v5   # 8 vCPU, 64 GB — work hours
+          - Standard_E4s_v5   # 4 vCPU, 32 GB — off-hours floor (never go lower)
+
+# Never let a down-scale and an up-scale (or two manual runs) overlap.
+concurrency:
+  group: vm-resize
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: read         # issues:write is scoped to the alert job only
 
 env:
   RESOURCE_GROUP: naarni-cad-vm_group
   VM_NAME: naarni-ai-vm
+  HEALTH_URL: https://ai.naarni.com/api/health
+  COMPOSE_DIR: /opt/naarni/deployment/docker_compose
+  COMPOSE_FILES: -f docker-compose.prod.yml -f docker-compose.naarni.yml
+  APP_CONTAINERS: api_server web_server background
 
 jobs:
   resize:
     name: Resize VM
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
+      # ── Decide the target size from the trigger ──────────────────────────
       - name: Determine target size
         id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SIZE: ${{ inputs.target_size }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "size=${{ inputs.target_size }}" >> $GITHUB_OUTPUT
-            echo "Manual resize to ${{ inputs.target_size }}"
-          elif [ "${{ github.event.schedule }}" = "25 4 * * *" ]; then
-            echo "size=Standard_E4s_v5" >> $GITHUB_OUTPUT
-            echo "Morning scale-up to E4s_v5 (4 vCPU, 32 GB)"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            SIZE="$INPUT_SIZE"
+            echo "Manual resize → $SIZE"
+          elif [ "$SCHEDULE" = "30 3 * * 1-5" ]; then
+            SIZE="Standard_E8s_v5"
+            echo "Work-hours scale-UP → E8s_v5 (8 vCPU, 64 GB)"
           else
-            echo "size=Standard_E2s_v5" >> $GITHUB_OUTPUT
-            echo "Evening scale-down to E2s_v5 (2 vCPU, 16 GB)"
+            SIZE="Standard_E4s_v5"
+            echo "Off-hours scale-DOWN → E4s_v5 (4 vCPU, 32 GB)"
           fi
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
 
       - name: Azure Login
-        uses: azure/login@v2
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # ratchet:azure/login@v2.3.0
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Check current VM size
-        id: current
+      # ── Inspect current size + power state; decide what work is needed ───
+      - name: Inspect VM
+        id: state
+        env:
+          TARGET_SIZE: ${{ steps.target.outputs.size }}
         run: |
-          CURRENT=$(az vm show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
+          CURRENT=$(az vm show -g "$RESOURCE_GROUP" -n "$VM_NAME" \
             --query 'hardwareProfile.vmSize' -o tsv)
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "Current size: $CURRENT"
-          echo "Target size:  ${{ steps.target.outputs.size }}"
+          POWER=$(az vm get-instance-view -g "$RESOURCE_GROUP" -n "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code,'PowerState')].code | [0]" -o tsv)
+          echo "Current size:  $CURRENT"
+          echo "Power state:   $POWER"
+          echo "Target size:   $TARGET_SIZE"
 
-      - name: Skip if already correct size
-        if: steps.current.outputs.current == steps.target.outputs.size
-        run: echo "Already at target size. Skipping resize."
+          NEED_RESIZE=false
+          [ "$CURRENT" != "$TARGET_SIZE" ] && NEED_RESIZE=true
+          NEED_START=false
+          [ "$POWER" != "PowerState/running" ] && NEED_START=true
+
+          echo "current=$CURRENT"           >> "$GITHUB_OUTPUT"
+          echo "need_resize=$NEED_RESIZE"    >> "$GITHUB_OUTPUT"
+          echo "need_start=$NEED_START"      >> "$GITHUB_OUTPUT"
+          if [ "$NEED_RESIZE" = "false" ] && [ "$NEED_START" = "false" ]; then
+            echo "Already at target size and running — nothing to do."
+          fi
+
+      # ── Guard: never resize below the 32 GB floor ───────────────────────
+      - name: Enforce 32 GB floor
+        if: steps.target.outputs.size == 'Standard_E2s_v5'
+        run: |
+          echo "::error::Refusing to resize to E2s_v5 (16 GB). OpenSearch + embedding server will OOM."
+          exit 1
+
+      # ── Gracefully stop app containers before pulling the VM down ────────
+      - name: Graceful stop (app containers)
+        if: steps.state.outputs.need_resize == 'true' && steps.state.outputs.need_start == 'false'
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # ratchet:appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -eo pipefail
+            cd ${{ env.COMPOSE_DIR }}
+            echo "Stopping app containers gracefully (volumes untouched)..."
+            docker compose ${{ env.COMPOSE_FILES }} stop ${{ env.APP_CONTAINERS }} 2>&1 | tail -10
+            echo "App containers stopped."
 
       - name: Deallocate VM
-        if: steps.current.outputs.current != steps.target.outputs.size
+        if: steps.state.outputs.need_resize == 'true'
         run: |
-          echo "Deallocating VM..."
-          az vm deallocate -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }}
-          echo "VM deallocated."
+          echo "Deallocating $VM_NAME ..."
+          az vm deallocate -g "$RESOURCE_GROUP" -n "$VM_NAME"
 
       - name: Resize VM
-        if: steps.current.outputs.current != steps.target.outputs.size
+        if: steps.state.outputs.need_resize == 'true'
+        env:
+          TARGET_SIZE: ${{ steps.target.outputs.size }}
         run: |
-          echo "Resizing to ${{ steps.target.outputs.size }}..."
-          az vm resize -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
-            --size ${{ steps.target.outputs.size }}
-          echo "Resize complete."
+          echo "Resizing to $TARGET_SIZE ..."
+          az vm resize -g "$RESOURCE_GROUP" -n "$VM_NAME" --size "$TARGET_SIZE"
 
       - name: Start VM
-        if: steps.current.outputs.current != steps.target.outputs.size
+        if: steps.state.outputs.need_resize == 'true' || steps.state.outputs.need_start == 'true'
         run: |
-          echo "Starting VM..."
-          az vm start -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }}
-          echo "VM started."
+          echo "Starting $VM_NAME ..."
+          az vm start -g "$RESOURCE_GROUP" -n "$VM_NAME"
 
-      - name: Wait for containers
-        if: steps.current.outputs.current != steps.target.outputs.size
+      # ── Wait for SSH to come back after boot ────────────────────────────
+      - name: Wait for SSH
+        if: steps.state.outputs.need_resize == 'true' || steps.state.outputs.need_start == 'true'
         run: |
-          echo "Waiting 90s for Docker containers to start..."
-          sleep 90
-
-      - name: Verify health
-        run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
-              "https://ai.naarni.com/api/health" || echo "000")
-            echo "  Health check $i/15: HTTP $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo ""
-              echo "NaArNi Gyan is healthy!"
-              FINAL_SIZE=$(az vm show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.VM_NAME }} \
-                --query 'hardwareProfile.vmSize' -o tsv)
-              echo "VM Size: $FINAL_SIZE"
+          echo "Waiting for SSH on ${VM_HOST}:22 ..."
+          for i in $(seq 1 30); do
+            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${VM_HOST}/22" 2>/dev/null; then
+              echo "SSH reachable after $((i*10))s"
               exit 0
             fi
             sleep 10
           done
-          echo "WARNING: Site not healthy after resize"
+          echo "::error::SSH did not come back within 5 minutes."
           exit 1
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+
+      # ── Bring the whole stack back to desired state (no recreate, no -v) ─
+      - name: Bring stack up
+        if: steps.state.outputs.need_resize == 'true' || steps.state.outputs.need_start == 'true'
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # ratchet:appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -eo pipefail
+            cd ${{ env.COMPOSE_DIR }}
+            echo "Starting all containers (data volumes untouched)..."
+            docker compose ${{ env.COMPOSE_FILES }} up -d 2>&1 | tail -20
+            echo ""
+            docker ps --format "table {{.Names}}\t{{.Status}}" | sort
+            echo ""
+            free -h | head -3
+
+      # ── Confirm the site is actually serving traffic ────────────────────
+      - name: Verify health
+        run: |
+          echo "Checking $HEALTH_URL ..."
+          for i in $(seq 1 18); do
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+            echo "  Attempt $i/18: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              FINAL=$(az vm show -g "$RESOURCE_GROUP" -n "$VM_NAME" \
+                --query 'hardwareProfile.vmSize' -o tsv)
+              echo "Healthy. VM size is now: $FINAL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Site not healthy after resize."
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Alert on ANY failure — fixes the "silent failure" gap (e.g. expired SP).
+  # ──────────────────────────────────────────────────────────────────────────
+  alert-on-failure:
+    name: Open issue on failure
+    needs: resize
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create / update alert issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # ratchet:actions/github-script@v7.1.0
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = '🔴 VM auto-resize failed';
+            const body = [
+              `The scheduled VM resize workflow **failed**.`,
+              ``,
+              `- Run: ${run}`,
+              `- Trigger: \`${context.eventName}\``,
+              ``,
+              `**The VM may be stuck deallocated or at the wrong size — check now.**`,
+              `Likely causes: expired \`AZURE_CREDENTIALS\` service principal, SSH/secret issue, or the site failing its health check after restart.`,
+              ``,
+              `Runbook: \`deployment/VM-RESIZE-OPS.md\` (see "Rollback").`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'vm-resize',
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['vm-resize'],
+              });
+            }
