@@ -5,7 +5,7 @@
 #
 # Key decisions:
 #   - Local model servers DISABLED (using Azure OpenAI for embeddings)
-#   - OpenSearch DISABLED (using Vespa only)
+#   - OpenSearch is the search backend (upstream replaced Vespa with OpenSearch)
 #   - Health checks on all critical services
 #   - Proper startup ordering: DB/Redis → API → Web → Nginx
 #   - Memory limits sized for D2ps_v5 (8 GB) night VM / D8ps_v5 (32 GB) day VM
@@ -38,10 +38,16 @@ services:
         limits:
           memory: 128M
 
-  # ── Vespa Search ─────────────────────────────────────────────────────
-  index:
+  # ── OpenSearch (search backend; replaces Vespa after the upstream migration) ──
+  opensearch:
+    # 401 (auth required) still means the port is up — `curl -sk` exits 0 on any
+    # HTTP response, so this passes once OpenSearch is listening (security on/off).
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:19071/state/v1/health || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sk https://localhost:9200 >/dev/null 2>&1 || curl -sf http://localhost:9200 >/dev/null 2>&1 || exit 1",
+        ]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -51,7 +57,7 @@ services:
         limits:
           memory: 4G
 
-  # ── API Server (waits for DB + Redis + Vespa) ────────────────────────
+  # ── API Server (waits for DB + Redis + OpenSearch) ───────────────────
   api_server:
     image: ${NAARNI_DOCKERHUB_ORG:-naarnimd}/naarni-ai-backend:${IMAGE_TAG:-latest}
     depends_on:
@@ -59,7 +65,7 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
-      index:
+      opensearch:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8080/health\")' || exit 1"]
@@ -81,7 +87,7 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
-      index:
+      opensearch:
         condition: service_healthy
     deploy:
       resources:

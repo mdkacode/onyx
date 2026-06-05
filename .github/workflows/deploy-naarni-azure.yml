@@ -124,7 +124,10 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            set -e
+            # pipefail is critical: the migration/up commands pipe to `tail`, and
+            # without it a failed `docker compose` (e.g. invalid compose project)
+            # is masked by tail's exit 0 and the deploy falsely reports success.
+            set -eo pipefail
             cd /opt/naarni/deployment/docker_compose
 
             # ── Build .env: merge config + secrets ──
@@ -144,9 +147,31 @@ jobs:
             echo "=== Pulling images ==="
             docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml pull api_server web_server background 2>&1 | tail -5
 
-            # ── Safe rolling restart: NEVER touch DB/Redis/Vespa ──
-            # Infrastructure (DB, Redis, Vespa) stays untouched — no restart, no recreate
-            echo "=== Restarting app containers only (DB/Redis/Vespa untouched) ==="
+            # ── Step 0: Start OpenSearch (new search backend; replaces Vespa) ──
+            # OpenSearch is a new service on this host. Bring it up (pulls image if
+            # needed) and wait until it responds before migrations / app start.
+            # The opensearch image ships curl; a 401 still means it's up, and
+            # `curl -sk` exits 0 on any HTTP response.
+            echo "=== Starting OpenSearch ==="
+            docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml up -d --no-deps opensearch 2>&1 | tail -5
+            echo "Waiting for OpenSearch to respond..."
+            os_ready=0
+            for i in $(seq 1 36); do
+              if docker exec onyx-opensearch-1 curl -sk https://localhost:9200 >/dev/null 2>&1 \
+                 || docker exec onyx-opensearch-1 curl -sf http://localhost:9200 >/dev/null 2>&1; then
+                echo "  OpenSearch responding after ${i}0s"; os_ready=1; break
+              fi
+              sleep 10
+            done
+            if [ "$os_ready" -ne 1 ]; then
+              echo "ERROR: OpenSearch did not become ready — aborting before app restart."
+              docker logs onyx-opensearch-1 --tail 40 2>&1 || true
+              exit 1
+            fi
+
+            # ── Safe rolling restart: NEVER touch DB/Redis/OpenSearch volumes ──
+            # Infrastructure (DB, Redis, OpenSearch) data volumes stay untouched.
+            echo "=== Restarting app containers only (DB/Redis/OpenSearch data untouched) ==="
 
             # Step 1a-pre: Back up the database BEFORE migrating (data-safety gate).
             # Migrations never run without a verified restore point. pg_dump uses
