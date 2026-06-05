@@ -17,7 +17,7 @@ see `NAARNI-OPS-GUIDE.md`.
 | **SSH** | `ssh naarni@52.140.124.116` |
 | **Working-hours size** | `Standard_E8s_v5` — 8 vCPU, 64 GB RAM |
 | **Off-hours size** | `Standard_E4s_v5` — 4 vCPU, 32 GB RAM |
-| **Schedule (IST)** | Mon–Fri: 08:00 scale-UP, 22:00 scale-DOWN. Weekends: stay DOWN |
+| **Schedule (IST)** | Mon–Fri: 09:00 scale-UP, 19:00 scale-DOWN. Weekends: stay DOWN |
 | **Expected downtime per transition** | 3–6 min |
 
 ---
@@ -45,10 +45,12 @@ GitHub Actions cron is UTC. IST = UTC+5:30, no DST.
 
 | Action | IST | UTC cron |
 |---|---|---|
-| Scale UP → E8s_v5 | Mon–Fri 08:00 | `30 2 * * 1-5` |
-| Scale DOWN → E4s_v5 | Mon–Fri 22:00 | `30 16 * * 1-5` |
+| Scale UP → E8s_v5 | Mon–Fri 09:00 | `30 3 * * 1-5` |
+| Scale DOWN → E4s_v5 | Mon–Fri 19:00 | `30 13 * * 1-5` |
 
-On Friday night the VM drops to E4s_v5 and **stays** through the weekend. First Monday scale-up at 08:00 IST brings it back to E8s_v5.
+On Friday evening the VM drops to E4s_v5 and **stays** through the weekend. First Monday scale-up at 09:00 IST brings it back to E8s_v5.
+
+All of the above is driven by a single workflow: `.github/workflows/vm-resize-schedule.yml`.
 
 ---
 
@@ -136,8 +138,8 @@ az snapshot list -g naarni-cad-vm_group \
   --query "[].{name:name, created:timeCreated, size:diskSizeGB}" -o table
 ```
 
-### Trigger a manual resize via GitHub Actions (once the workflows exist)
-GitHub → Actions → `Scale Up` / `Scale Down` → Run workflow
+### Trigger a manual resize via GitHub Actions
+GitHub → Actions → `NaArNi VM - Scheduled Resize` → Run workflow → pick `Standard_E8s_v5` or `Standard_E4s_v5`
 
 ### Health check from your laptop
 ```bash

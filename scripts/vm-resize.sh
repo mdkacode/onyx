@@ -3,8 +3,8 @@
 # NaArNi VM Resize Script (runs ON the VM itself)
 # ============================================================================
 # Usage:
-#   ./vm-resize.sh up      # Scale to E4s_v5 (4 vCPU, 32 GB)
-#   ./vm-resize.sh down    # Scale to E2s_v5 (2 vCPU, 16 GB)
+#   ./vm-resize.sh up      # Scale to E8s_v5 (8 vCPU, 64 GB)
+#   ./vm-resize.sh down    # Scale to E4s_v5 (4 vCPU, 32 GB)
 #   ./vm-resize.sh status  # Show current VM size
 #
 # IMPORTANT: When resizing, this script triggers an async Azure operation.
@@ -20,8 +20,8 @@ set -e
 RG="naarni-cad-vm_group"
 VM="naarni-ai-vm"
 SUBSCRIPTION="d091bc43-1a97-4a25-b271-a9eb6616bb82"
-SIZE_UP="Standard_E4s_v5"    # 4 vCPU, 32 GB — business hours
-SIZE_DOWN="Standard_E2s_v5"  # 2 vCPU, 16 GB — off-hours
+SIZE_UP="Standard_E8s_v5"    # 8 vCPU, 64 GB — business hours
+SIZE_DOWN="Standard_E4s_v5"  # 4 vCPU, 32 GB — off-hours (NEVER go below 32 GB: OpenSearch + embedding server OOM)
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*"; }
 
