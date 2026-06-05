@@ -1,0 +1,225 @@
+# ============================================================================
+# NaArNi — Azure Orphaned-Resource Sweep (Cost Optimization)
+# ============================================================================
+# Finds (and optionally deletes) resources you're paying for but not using:
+#   * Unattached managed disks      (full price even when attached to nothing)
+#   * Snapshots beyond a retention  (keep the newest N, delete older)
+#   * Orphaned NICs                 (attached to no VM — they park public IPs)
+#   * Idle public IPs               (unassociated OR pinned to a dead NIC;
+#                                    Standard static IPs bill ~$3.65/mo idle)
+#
+# SAFETY MODEL (deletion is irreversible — we had a data-loss incident before):
+#   * Scheduled runs are ALWAYS dry-run: they only REPORT (open/update a
+#     GitHub issue). They never delete anything.
+#   * Deletion happens ONLY when a human manually runs the workflow with
+#     mode = "apply", AFTER reviewing the dry-run report.
+#   * Production resources can't match the filters: the OS disk is *attached*
+#     and the prod IP (52.140.124.116) is *associated*, so neither is ever a
+#     candidate. Snapshot deletion keeps the newest N as a safety net.
+#
+# Required GitHub Secret:
+#   AZURE_CREDENTIALS — SP JSON with Reader (dry-run) / Contributor (apply)
+#                       across the subscription.
+#
+# To actually clear orphans:
+#   1. Run once with mode=dry-run, read the issue/report it produces.
+#   2. If it looks right, run again with mode=apply.
+# ============================================================================
+
+name: NaArNi Azure - Orphaned Resource Sweep
+
+on:
+  schedule:
+    # Mondays 09:30 IST (04:00 UTC) — weekly dry-run report only
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (report only) or apply (DELETE the orphans below)'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+      snapshot_keep:
+        description: 'Number of most-recent snapshots to keep'
+        required: true
+        default: '4'
+
+concurrency:
+  group: azure-orphan-sweep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Sweep orphaned resources
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write          # scoped here only — for the findings issue
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # ratchet:azure/login@v2.3.0
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Sweep
+        id: sweep
+        env:
+          MODE: ${{ inputs.mode || 'dry-run' }}
+          KEEP: ${{ inputs.snapshot_keep || '4' }}
+        run: |
+          set -eo pipefail
+          REPORT=sweep-report.md
+          : > "$REPORT"
+          FOUND=false
+
+          {
+            echo "## 🧹 Azure orphaned-resource sweep"
+            echo ""
+            echo "- **Mode:** \`$MODE\`"
+            echo "- **Snapshot retention:** keep newest \`$KEEP\`"
+            echo ""
+          } >> "$REPORT"
+
+          # ---- 1. Unattached managed disks -----------------------------------
+          echo "### Unattached managed disks" >> "$REPORT"
+          DISKS=$(az disk list \
+            --query "[?diskState=='Unattached'].{name:name, rg:resourceGroup, sizeGB:diskSizeGB, sku:sku.name, created:timeCreated, id:id}" \
+            -o json)
+          DCOUNT=$(echo "$DISKS" | jq 'length')
+          DISK_GB=$(echo "$DISKS" | jq '[.[].sizeGB] | add // 0')
+          if [ "$DCOUNT" -gt 0 ]; then
+            FOUND=true
+            echo "$DISKS" | jq -r '.[] | "- `\(.name)` (\(.rg)) — \(.sizeGB) GB, \(.sku) — created \(.created)"' >> "$REPORT"
+            if [ "$MODE" = "apply" ]; then
+              echo "$DISKS" | jq -r '.[].id' | while read -r id; do
+                echo "Deleting disk: $id"
+                az disk delete --ids "$id" --yes --no-wait
+              done
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$DCOUNT** unattached disk(s)." >> "$REPORT"
+            fi
+          else
+            echo "_None._" >> "$REPORT"
+          fi
+          echo "" >> "$REPORT"
+
+          # ---- 2. Snapshots beyond retention ---------------------------------
+          echo "### Snapshots beyond retention (keep newest $KEEP)" >> "$REPORT"
+          SNAPS=$(az snapshot list \
+            --query "[].{name:name, rg:resourceGroup, sizeGB:diskSizeGB, created:timeCreated, id:id}" \
+            -o json)
+          OLD=$(echo "$SNAPS" | jq --argjson k "$KEEP" 'sort_by(.created) | reverse | .[$k:]')
+          SCOUNT=$(echo "$OLD" | jq 'length')
+          SNAP_GB=$(echo "$OLD" | jq '[.[].sizeGB] | add // 0')
+          if [ "$SCOUNT" -gt 0 ]; then
+            FOUND=true
+            echo "$OLD" | jq -r '.[] | "- `\(.name)` (\(.rg)) — \(.sizeGB) GB — created \(.created)"' >> "$REPORT"
+            if [ "$MODE" = "apply" ]; then
+              echo "$OLD" | jq -r '.[].id' | while read -r id; do
+                echo "Deleting snapshot: $id"
+                az snapshot delete --ids "$id"
+              done
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$SCOUNT** old snapshot(s)." >> "$REPORT"
+            fi
+          else
+            echo "_None beyond retention._" >> "$REPORT"
+          fi
+          echo "" >> "$REPORT"
+
+          # ---- 3. Orphaned NICs (attached to no VM) --------------------------
+          # Deleted BEFORE IPs: a public IP can't be removed while pinned to a
+          # NIC, and dead NICs are exactly what parks "in-use"-looking IPs.
+          echo "### Orphaned NICs (no VM)" >> "$REPORT"
+          NICS=$(az network nic list \
+            --query "[?virtualMachine==null].{name:name, rg:resourceGroup, id:id, pip:ipConfigurations[0].publicIPAddress.id}" \
+            -o json)
+          NCOUNT=$(echo "$NICS" | jq 'length')
+          if [ "$NCOUNT" -gt 0 ]; then
+            FOUND=true
+            echo "$NICS" | jq -r '.[] | "- `\(.name)` (\(.rg))\(if .pip then " — parks a public IP" else "" end)"' >> "$REPORT"
+            if [ "$MODE" = "apply" ]; then
+              echo "$NICS" | jq -r '.[].id' | while read -r id; do
+                echo "Deleting NIC: $id"; az network nic delete --ids "$id"
+              done
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$NCOUNT** orphaned NIC(s)." >> "$REPORT"
+            fi
+          else
+            echo "_None._" >> "$REPORT"
+          fi
+          echo "" >> "$REPORT"
+
+          # ---- 4. Idle public IPs (unassociated OR parked on a dead NIC) -----
+          # ipConfiguration==null alone MISSES IPs pinned to a VM-less NIC
+          # (they look "in-use"). So we also flag IPs whose NIC is in the
+          # orphaned set above — that report predicts what apply will remove.
+          echo "### Idle public IPs" >> "$REPORT"
+          ORPHAN_NIC_IDS=$(echo "$NICS" | jq -c '[.[].id // empty]')
+          IPS=$(az network public-ip list \
+            --query "[].{name:name, rg:resourceGroup, ip:ipAddress, sku:sku.name, id:id, nic:ipConfiguration.id}" -o json \
+            | jq --argjson on "$ORPHAN_NIC_IDS" \
+                '[ .[] | select(.nic==null or ((.nic|tostring) as $n | $on | any(. as $o | $n | startswith($o)))) ]')
+          ICOUNT=$(echo "$IPS" | jq 'length')
+          if [ "$ICOUNT" -gt 0 ]; then
+            FOUND=true
+            echo "$IPS" | jq -r '.[] | "- `\(.name)` (\(.rg)) — \(.ip // "no-ip") — \(.sku)"' >> "$REPORT"
+            if [ "$MODE" = "apply" ]; then
+              # NICs are already deleted above, so freed IPs now read as
+              # unassociated. Delete every currently-unassociated IP.
+              az network public-ip list --query "[?ipConfiguration==null].id" -o tsv | while read -r id; do
+                [ -n "$id" ] && { echo "Deleting public IP: $id"; az network public-ip delete --ids "$id"; }
+              done
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$ICOUNT** idle public IP(s)." >> "$REPORT"
+            fi
+          else
+            echo "_None._" >> "$REPORT"
+          fi
+          echo "" >> "$REPORT"
+
+          # ---- Rough monthly-waste estimate ----------------------------------
+          # Rough rates: disk Premium ~$0.12/GB-mo, snapshot ~$0.05/GB-mo,
+          # Standard static IP ~$3.65/mo. Estimates only — confirm in portal.
+          COST=$(awk "BEGIN{printf \"%.2f\", $DISK_GB*0.12 + $SNAP_GB*0.05 + $ICOUNT*3.65}")
+          {
+            echo "---"
+            echo "**Estimated monthly waste: ~\$$COST/mo** _(rough)_ — "
+            echo "disks ${DISK_GB} GB · snapshots ${SNAP_GB} GB · ${ICOUNT} idle IP(s)."
+            if [ "$MODE" != "apply" ] && [ "$FOUND" = "true" ]; then
+              echo ""
+              echo "> ℹ️ Dry-run — nothing deleted. To clear these, re-run this workflow with **mode = apply**."
+            fi
+          } >> "$REPORT"
+
+          cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          echo "found=$FOUND" >> "$GITHUB_OUTPUT"
+
+      - name: Report findings to issue
+        if: steps.sweep.outputs.found == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # ratchet:actions/github-script@v7.1.0
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('sweep-report.md', 'utf8')
+              + `\n\n_Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_`;
+            const title = '💸 Azure orphaned resources detected';
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'azure-cleanup',
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['azure-cleanup'],
+              });
+            }
