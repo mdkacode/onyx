@@ -1,28 +1,29 @@
 import type { IconProps } from "@opal/types";
+
+// NaArNi brand mark — three green hexagons with a gradient. Replaces the
+// upstream Onyx logo across every @opal/logos surface (sidebar, header, etc.).
 const SvgOnyxLogo = ({ size, ...props }: IconProps) => (
   <svg
     height={size}
-    viewBox="0 0 64 64"
+    viewBox="12 3 76 74"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
     {...props}
   >
-    <path
-      d="M10.4014 13.25L18.875 32L10.3852 50.75L2 32L10.4014 13.25Z"
-      fill="var(--theme-primary-05)"
-    />
-    <path
-      d="M53.5264 13.25L62 32L53.5102 50.75L45.125 32L53.5264 13.25Z"
-      fill="var(--theme-primary-05)"
-    />
-    <path
-      d="M32 45.125L50.75 53.5625L32 62L13.25 53.5625L32 45.125Z"
-      fill="var(--theme-primary-05)"
-    />
-    <path
-      d="M32 2L50.75 10.4375L32 18.875L13.25 10.4375L32 2Z"
-      fill="var(--theme-primary-05)"
-    />
+    <defs>
+      <linearGradient id="naarniGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stopColor="#7EEDB4" />
+        <stop offset="100%" stopColor="#2ECC71" />
+      </linearGradient>
+    </defs>
+    {/* Top hexagon */}
+    <polygon points="50,5 68,15 68,35 50,45 32,35 32,15" fill="url(#naarniGrad)" />
+    {/* Bottom-left hexagon */}
+    <polygon points="32,35 50,45 50,65 32,75 14,65 14,45" fill="url(#naarniGrad)" />
+    {/* Bottom-right hexagon */}
+    <polygon points="68,35 86,45 86,65 68,75 50,65 50,45" fill="url(#naarniGrad)" />
+    {/* Center highlight */}
+    <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
   </svg>
 );
 export default SvgOnyxLogo;

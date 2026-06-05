@@ -168,9 +168,14 @@ RUN ln -s /usr/local/bin/supervisord /usr/bin/supervisord && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
-# Pre-downloading models for setups with limited egress
-RUN python -c "from tokenizers import Tokenizer; \
-Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')"
+# Pre-downloading models for setups with limited egress.
+# Retry on transient HuggingFace Hub failures and tolerate a full outage so the
+# image build is never blocked by HF flakiness — the tokenizer downloads at
+# runtime if it wasn't pre-cached.
+RUN for i in 1 2 3 4 5; do \
+      python -c "from tokenizers import Tokenizer; Tokenizer.from_pretrained('nomic-ai/nomic-embed-text-v1')" && break; \
+      echo "tokenizer pre-download attempt $i failed; retrying in 10s..."; sleep 10; \
+    done || echo "WARN: tokenizer pre-download skipped (will download at runtime)"
 
 # Pre-downloading NLTK for setups with limited egress
 RUN python -c "import nltk; \
