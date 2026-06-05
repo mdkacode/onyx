@@ -110,9 +110,11 @@ jobs:
           NEED_START=false
           [ "$POWER" != "PowerState/running" ] && NEED_START=true
 
-          echo "current=$CURRENT"           >> "$GITHUB_OUTPUT"
-          echo "need_resize=$NEED_RESIZE"    >> "$GITHUB_OUTPUT"
-          echo "need_start=$NEED_START"      >> "$GITHUB_OUTPUT"
+          {
+            echo "current=$CURRENT"
+            echo "need_resize=$NEED_RESIZE"
+            echo "need_start=$NEED_START"
+          } >> "$GITHUB_OUTPUT"
           if [ "$NEED_RESIZE" = "false" ] && [ "$NEED_START" = "false" ]; then
             echo "Already at target size and running — nothing to do."
           fi
