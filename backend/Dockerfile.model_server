@@ -31,8 +31,14 @@ RUN uv pip install --system --no-cache-dir --no-deps --require-hashes \
 # Stage for downloading embedding models. Instantiating SentenceTransformer
 # pulls down both the weights and the custom architecture code.
 FROM base AS embedding-models
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-SentenceTransformer(model_name_or_path='nomic-ai/nomic-embed-text-v1', trust_remote_code=True);"
+# Retry on transient HuggingFace Hub failures and tolerate a full outage so the
+# image build is never blocked by HF flakiness — the model downloads at runtime
+# if it wasn't pre-cached. (NaArNi runs Azure OpenAI embeddings, so this image
+# is built but not deployed; an empty cache is harmless either way.)
+RUN for i in 1 2 3 4 5; do \
+      python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(model_name_or_path='nomic-ai/nomic-embed-text-v1', trust_remote_code=True);" && break; \
+      echo "embedding-model pre-download attempt $i failed; retrying in 15s..."; sleep 15; \
+    done || echo "WARN: embedding-model pre-download skipped (will download at runtime)"
 
 # Final stage - combine all downloads
 FROM base AS final
