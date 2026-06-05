@@ -4,7 +4,9 @@
 # Finds (and optionally deletes) resources you're paying for but not using:
 #   * Unattached managed disks      (full price even when attached to nothing)
 #   * Snapshots beyond a retention  (keep the newest N, delete older)
-#   * Unassociated public IPs       (Standard static IPs bill ~$3.65/mo idle)
+#   * Orphaned NICs                 (attached to no VM — they park public IPs)
+#   * Idle public IPs               (unassociated OR pinned to a dead NIC;
+#                                    Standard static IPs bill ~$3.65/mo idle)
 #
 # SAFETY MODEL (deletion is irreversible — we had a data-loss incident before):
 #   * Scheduled runs are ALWAYS dry-run: they only REPORT (open/update a
@@ -131,21 +133,49 @@ jobs:
           fi
           echo "" >> "$REPORT"
 
-          # ---- 3. Unassociated public IPs ------------------------------------
-          echo "### Unassociated public IPs" >> "$REPORT"
-          IPS=$(az network public-ip list \
-            --query "[?ipConfiguration==null].{name:name, rg:resourceGroup, ip:ipAddress, sku:sku.name, id:id}" \
+          # ---- 3. Orphaned NICs (attached to no VM) --------------------------
+          # Deleted BEFORE IPs: a public IP can't be removed while pinned to a
+          # NIC, and dead NICs are exactly what parks "in-use"-looking IPs.
+          echo "### Orphaned NICs (no VM)" >> "$REPORT"
+          NICS=$(az network nic list \
+            --query "[?virtualMachine==null].{name:name, rg:resourceGroup, id:id, pip:ipConfigurations[0].publicIPAddress.id}" \
             -o json)
+          NCOUNT=$(echo "$NICS" | jq 'length')
+          if [ "$NCOUNT" -gt 0 ]; then
+            FOUND=true
+            echo "$NICS" | jq -r '.[] | "- `\(.name)` (\(.rg))\(if .pip then " — parks a public IP" else "" end)"' >> "$REPORT"
+            if [ "$MODE" = "apply" ]; then
+              echo "$NICS" | jq -r '.[].id' | while read -r id; do
+                echo "Deleting NIC: $id"; az network nic delete --ids "$id"
+              done
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$NCOUNT** orphaned NIC(s)." >> "$REPORT"
+            fi
+          else
+            echo "_None._" >> "$REPORT"
+          fi
+          echo "" >> "$REPORT"
+
+          # ---- 4. Idle public IPs (unassociated OR parked on a dead NIC) -----
+          # ipConfiguration==null alone MISSES IPs pinned to a VM-less NIC
+          # (they look "in-use"). So we also flag IPs whose NIC is in the
+          # orphaned set above — that report predicts what apply will remove.
+          echo "### Idle public IPs" >> "$REPORT"
+          ORPHAN_NIC_IDS=$(echo "$NICS" | jq -c '[.[].id // empty]')
+          IPS=$(az network public-ip list \
+            --query "[].{name:name, rg:resourceGroup, ip:ipAddress, sku:sku.name, id:id, nic:ipConfiguration.id}" -o json \
+            | jq --argjson on "$ORPHAN_NIC_IDS" \
+                '[ .[] | select(.nic==null or ((.nic|tostring) as $n | $on | any(. as $o | $n | startswith($o)))) ]')
           ICOUNT=$(echo "$IPS" | jq 'length')
           if [ "$ICOUNT" -gt 0 ]; then
             FOUND=true
             echo "$IPS" | jq -r '.[] | "- `\(.name)` (\(.rg)) — \(.ip // "no-ip") — \(.sku)"' >> "$REPORT"
             if [ "$MODE" = "apply" ]; then
-              echo "$IPS" | jq -r '.[].id' | while read -r id; do
-                echo "Deleting public IP: $id"
-                az network public-ip delete --ids "$id"
+              # NICs are already deleted above, so freed IPs now read as
+              # unassociated. Delete every currently-unassociated IP.
+              az network public-ip list --query "[?ipConfiguration==null].id" -o tsv | while read -r id; do
+                [ -n "$id" ] && { echo "Deleting public IP: $id"; az network public-ip delete --ids "$id"; }
               done
-              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$ICOUNT** unassociated IP(s)." >> "$REPORT"
+              echo "" >> "$REPORT"; echo "> 🗑️ Deleted **$ICOUNT** idle public IP(s)." >> "$REPORT"
             fi
           else
             echo "_None._" >> "$REPORT"
