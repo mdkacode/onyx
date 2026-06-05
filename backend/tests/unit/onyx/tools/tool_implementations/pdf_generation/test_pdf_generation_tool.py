@@ -280,10 +280,15 @@ def test_run_happy_path_saves_file_and_emits_final_packet() -> None:
     assert save_call.kwargs["file_type"] == "application/pdf"
     assert save_call.kwargs["display_name"] == "Q1 Review.pdf"
 
-    # Final packet emitted
-    emit_call = emitter.emit.call_args
-    packet = emit_call.args[0]
-    assert packet.obj.type == "pdf_generation_final"
+    # Final packet emitted (the tool emits PdfGenerationFinal, then a
+    # CustomToolDelta for the download button, so search all emitted packets).
+    final_packets = [
+        call.args[0]
+        for call in emitter.emit.call_args_list
+        if call.args[0].obj.type == "pdf_generation_final"
+    ]
+    assert len(final_packets) == 1
+    packet = final_packets[0]
     assert packet.obj.pdf.file_id == "file-abc-123"
     assert packet.obj.pdf.page_count == 3
     assert packet.obj.pdf.title == "Q1 Review"
