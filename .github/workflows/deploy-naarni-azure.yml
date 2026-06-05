@@ -148,6 +148,23 @@ jobs:
             # Infrastructure (DB, Redis, Vespa) stays untouched — no restart, no recreate
             echo "=== Restarting app containers only (DB/Redis/Vespa untouched) ==="
 
+            # Step 1a-pre: Back up the database BEFORE migrating (data-safety gate).
+            # Migrations never run without a verified restore point. pg_dump uses
+            # custom format (-Fc, compressed + restorable via pg_restore). Aborts the
+            # whole deploy if the dump is missing or implausibly small.
+            echo "=== Backing up database before migration ==="
+            mkdir -p /opt/naarni/backups
+            BACKUP_FILE="/opt/naarni/backups/pre-deploy-$(date +%Y%m%d-%H%M%S).dump"
+            docker exec onyx-relational_db-1 pg_dump -U postgres -Fc postgres > "$BACKUP_FILE"
+            BACKUP_SIZE=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || echo 0)
+            echo "Backup written: $BACKUP_FILE ($BACKUP_SIZE bytes)"
+            if [ "$BACKUP_SIZE" -lt 50000 ]; then
+              echo "ERROR: backup missing or too small ($BACKUP_SIZE bytes) — aborting deploy BEFORE migrations."
+              exit 1
+            fi
+            # Retain only the 10 most recent pre-deploy backups
+            ls -1t /opt/naarni/backups/pre-deploy-*.dump 2>/dev/null | tail -n +11 | xargs -r rm -f
+
             # Step 1a: Run Alembic migrations before starting the new API server
             echo "=== Running database migrations ==="
             docker compose -f docker-compose.prod.yml -f docker-compose.naarni.yml run --rm --no-deps \
