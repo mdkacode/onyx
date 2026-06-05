@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
-from onyx.auth.users import current_admin_user
+from onyx.auth.users import current_curator_or_admin_user
 from onyx.db.engine.sql_engine import get_session
 from onyx.db.models import User
 from onyx.db.user_usage import get_all_users_token_usage
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/admin/usage")
 @router.get("/users")
 def get_users_usage(
     period_days: int = 30,
-    _: User = Depends(current_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> list[dict[str, object]]:
     """Get token usage for all users within the specified period."""
@@ -41,7 +41,7 @@ def get_users_usage(
 def get_user_usage_detail(
     user_id: str,
     period_days: int = 30,
-    _: User = Depends(current_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> dict[str, object]:
     """Get detailed token usage for a specific user."""
@@ -67,7 +67,7 @@ def get_user_usage_detail(
 def get_user_daily_usage(
     user_id: str,
     period_days: int = 30,
-    _: User = Depends(current_admin_user),
+    _: User = Depends(current_curator_or_admin_user),
     db_session: Session = Depends(get_session),
 ) -> list[dict[str, object]]:
     """Get daily token usage breakdown for a specific user."""
