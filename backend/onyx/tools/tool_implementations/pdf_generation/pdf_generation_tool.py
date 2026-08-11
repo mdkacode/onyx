@@ -206,8 +206,7 @@ class PdfGenerationTool(Tool[None]):
                                         "type": "array",
                                         "items": {"type": "string"},
                                         "description": (
-                                            "5–10 word fragments. No trailing "
-                                            "periods."
+                                            "5–10 word fragments. No trailing periods."
                                         ),
                                     },
                                     "callout": {
@@ -491,11 +490,17 @@ class PdfGenerationTool(Tool[None]):
         buffer = io.BytesIO(pdf_bytes)
 
         file_store = get_default_file_store()
+        # The generated PDF is handed to the user as a bare /chat/file/{id}
+        # link in the message body, so it never lands in ChatMessage.files.
+        # Record the owner here — it is the only thing authorizing the later
+        # download (see _user_can_access_generated_report).
+        file_metadata = {"user_id": str(self._user.id)} if self._user else None
         file_id = file_store.save_file(
             content=buffer,
             display_name=f"{title}.pdf",
             file_origin=FileOrigin.GENERATED_REPORT,
             file_type="application/pdf",
+            file_metadata=file_metadata,
         )
         file_url = build_frontend_file_url(file_id)
 

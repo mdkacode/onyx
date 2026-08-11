@@ -19,8 +19,10 @@
 #   OAUTH_CLIENT_SECRET       — Azure AD app client secret
 #   USER_AUTH_SECRET           — OIDC state token signing key
 #   POSTGRES_PASSWORD          — Database password
-#   S3_AWS_ACCESS_KEY_ID       — AWS S3 access key
-#   S3_AWS_SECRET_ACCESS_KEY   — AWS S3 secret key
+#   AZURE_STORAGE_ACCOUNT_KEY  — key for storage account naarnionyxfilestore
+#                                (REQUIRED — the file store runs on Azure Blob)
+#   S3_AWS_ACCESS_KEY_ID       — AWS S3 access key (legacy, rollback only)
+#   S3_AWS_SECRET_ACCESS_KEY   — AWS S3 secret key (legacy, rollback only)
 # ============================================================================
 
 name: NaArNi Gyan - Build & Deploy
@@ -47,19 +49,21 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # ratchet:docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # ratchet:docker/setup-buildx-action@v4
 
       - name: Build & Push Backend
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # ratchet:docker/build-push-action@v6
         with:
           context: backend/
           file: backend/Dockerfile
@@ -71,7 +75,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build & Push Web
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # ratchet:docker/build-push-action@v6
         with:
           context: web/
           file: web/Dockerfile
@@ -83,7 +87,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build & Push Model Server
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # ratchet:docker/build-push-action@v6
         with:
           context: backend/
           file: backend/Dockerfile.model_server
@@ -105,10 +109,12 @@ jobs:
 
     steps:
       - name: Checkout code (for config files)
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Copy deployment configs to VM
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # ratchet:appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
@@ -118,7 +124,7 @@ jobs:
           overwrite: true
 
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # ratchet:appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
@@ -134,11 +140,15 @@ jobs:
             # IMPORTANT: Never use 'down -v' or remove volumes — data must persist
             cp .env.naarni-azure .env
             cp .env.nginx.naarni .env.nginx
+            # S3_* are unused now that FILE_STORE_BACKEND=azure, but stay
+            # injected so a rollback is a one-line edit to .env.naarni-azure
+            # rather than a secrets round-trip. The old bucket is still intact.
             cat >> .env <<'SECRETS_EOF'
             OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
             OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             USER_AUTH_SECRET=${{ secrets.USER_AUTH_SECRET }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            AZURE_STORAGE_ACCOUNT_KEY=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
             S3_AWS_ACCESS_KEY_ID=${{ secrets.S3_AWS_ACCESS_KEY_ID }}
             S3_AWS_SECRET_ACCESS_KEY=${{ secrets.S3_AWS_SECRET_ACCESS_KEY }}
             SECRETS_EOF

@@ -267,6 +267,13 @@ azure-cognitiveservices-speech==1.38.0 \
     --hash=sha256:1d38d8c056fb3f513a9ff27ab4e77fd08ca487f8788cc7a6df772c1ab2c97b54 \
     --hash=sha256:1e002595a749471efeac3a54c80097946570b76c13049760b97a4b881d9d24af \
     --hash=sha256:9dd0800fbc4a8438c6dfd5747a658251914fe2d205a29e9b46158cadac6ab381
+azure-core==1.41.0 \
+    --hash=sha256:522b4011e8180b1a3dcd2024396a4e7fe9ac37fb8597db47163d230b5efe892d \
+    --hash=sha256:f46ff5dfcd230f25cf1c19e8a34b8dc08a337b2503e268bb600a16c00db8ad5a
+    # via azure-storage-blob
+azure-storage-blob==12.30.0 \
+    --hash=sha256:2cd74d4d5731e5eb6b8d5c5056ee115a5e88f8fdf22517b739836fda685018be \
+    --hash=sha256:d415ac50b67a8da6b3ae7e9f1014b1b55cd7aafa0b8d4ca9b380568dc7360423
 babel==2.17.0 \
     --hash=sha256:0c54cffb19f690cdcc52a3b50bcbf71e07a808d1c80d549f2459b9d2cf0afb9d \
     --hash=sha256:4d0b53093fdfb4b21c92b5213dba5a1b23885afa8383709427046b21c366e5f2
@@ -655,6 +662,7 @@ cryptography==46.0.7 \
     # via
     #   aioquic
     #   authlib
+    #   azure-storage-blob
     #   google-auth
     #   mitmproxy
     #   msal
@@ -1246,6 +1254,7 @@ isodate==0.7.2 \
     --hash=sha256:28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15 \
     --hash=sha256:4cd1aa0f43ca76f4a6c6c0292a85f40b35ec2e43e315b59f06e6d32171a953e6
     # via
+    #   azure-storage-blob
     #   python3-saml
     #   zeep
 itsdangerous==2.2.0 \
@@ -2644,6 +2653,7 @@ requests==2.33.0 \
     --hash=sha256:c7ebc5e8b0f21837386ad0e1c8fe8b829fa5f544d8df3b2253bff14ef29d7652
     # via
     #   atlassian-python-api
+    #   azure-core
     #   braintrust
     #   cohere
     #   docker
@@ -3037,6 +3047,8 @@ typing-extensions==4.15.0 \
     --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
     # via
     #   alembic
+    #   azure-core
+    #   azure-storage-blob
     #   braintrust
     #   cohere
     #   cron-descriptor

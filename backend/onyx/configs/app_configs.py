@@ -1407,6 +1407,23 @@ GCS_SERVICE_ACCOUNT_KEY_PATH = os.environ.get("GCS_SERVICE_ACCOUNT_KEY_PATH") or
 # Service account key as inline JSON string (alternative to file path).
 GCS_SERVICE_ACCOUNT_KEY_JSON = os.environ.get("GCS_SERVICE_ACCOUNT_KEY_JSON") or None
 
+# Azure Blob Storage Configuration
+# The blob container is the Azure analogue of an S3 bucket; it is stored in
+# FileRecord.bucket_name so records look the same across all backends.
+AZURE_BLOB_CONTAINER_NAME = (
+    os.environ.get("AZURE_BLOB_CONTAINER_NAME") or "onyx-file-store"
+)
+AZURE_BLOB_PREFIX = os.environ.get("AZURE_BLOB_PREFIX") or "onyx-files"
+AZURE_STORAGE_ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME") or None
+# Shared key for the storage account. When unset, DefaultAzureCredential is used
+# against the account URL, which supports Managed Identity / Workload Identity
+# and keeps the secret out of the environment entirely.
+AZURE_STORAGE_ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY") or None
+# Full connection string (alternative to account name + key).
+AZURE_STORAGE_CONNECTION_STRING = (
+    os.environ.get("AZURE_STORAGE_CONNECTION_STRING") or None
+)
+
 # Forcing Vespa Language
 # English: en, German:de, etc. See: https://docs.vespa.ai/en/linguistics.html
 VESPA_LANGUAGE_OVERRIDE = os.environ.get("VESPA_LANGUAGE_OVERRIDE")

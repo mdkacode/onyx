@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 from typing import cast
 
 from sqlalchemy import cast as sa_cast
@@ -270,7 +271,37 @@ def user_can_access_chat_file(file_id: str, user: User, db_session: Session) -> 
     if is_chat_image_gen:
         return True
 
+    if _user_can_access_generated_report(file_id, user, db_session):
+        return True
+
     return _user_can_access_connector_file(file_id, user, db_session)
+
+
+def _user_can_access_generated_report(
+    file_id: str, user: User, db_session: Session
+) -> bool:
+    """Return True if `file_id` is a GENERATED_REPORT owned by `user`.
+
+    Tool-generated reports (PdfGenerationTool) are surfaced to the user as a
+    bare `/chat/file/{file_id}` link inside the assistant's message body, so
+    they never land in `ChatMessage.files` and none of the other branches in
+    `user_can_access_chat_file` match them. Ownership is instead recorded at
+    save time in `FileRecord.file_metadata["user_id"]`.
+
+    Records written before that metadata existed have no owner recorded; those
+    stay inaccessible rather than being treated as public.
+    """
+    file_metadata = db_session.execute(
+        select(FileRecord.file_metadata).where(
+            FileRecord.file_id == file_id,
+            FileRecord.file_origin == FileOrigin.GENERATED_REPORT,
+        )
+    ).scalar_one_or_none()
+
+    if not isinstance(file_metadata, dict):
+        return False
+
+    return cast(dict[str, Any], file_metadata).get("user_id") == str(user.id)
 
 
 def _user_can_access_persona_attached_file(
