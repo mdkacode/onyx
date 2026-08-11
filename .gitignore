@@ -36,6 +36,7 @@ backend/onyx/evals/one_off/*.json
 .env
 jira_test_env
 settings.json
+keys.json
 
 # others
 /deployment/data/nginx/app.conf

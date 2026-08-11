@@ -43,6 +43,7 @@ from shared_configs.contextvars import get_current_tenant_id
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
+    from onyx.file_store.azure_file_store import AzureBlobFileStore
     from onyx.file_store.gcs_file_store import GCSBackedFileStore
 
 logger = setup_logger()
@@ -646,6 +647,30 @@ def get_gcs_file_store() -> "GCSBackedFileStore":
     )
 
 
+def get_azure_file_store() -> "AzureBlobFileStore":
+    """Returns the Azure Blob Storage file store implementation."""
+    from onyx.configs.app_configs import AZURE_BLOB_CONTAINER_NAME
+    from onyx.configs.app_configs import AZURE_BLOB_PREFIX
+    from onyx.configs.app_configs import AZURE_STORAGE_ACCOUNT_KEY
+    from onyx.configs.app_configs import AZURE_STORAGE_ACCOUNT_NAME
+    from onyx.configs.app_configs import AZURE_STORAGE_CONNECTION_STRING
+    from onyx.file_store.azure_file_store import AzureBlobFileStore
+
+    if not AZURE_STORAGE_CONNECTION_STRING and not AZURE_STORAGE_ACCOUNT_NAME:
+        raise RuntimeError(
+            "AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_CONNECTION_STRING is "
+            "required for the Azure file store"
+        )
+
+    return AzureBlobFileStore(
+        container_name=AZURE_BLOB_CONTAINER_NAME,
+        account_name=AZURE_STORAGE_ACCOUNT_NAME,
+        account_key=AZURE_STORAGE_ACCOUNT_KEY,
+        connection_string=AZURE_STORAGE_CONNECTION_STRING,
+        azure_prefix=AZURE_BLOB_PREFIX,
+    )
+
+
 def get_default_file_store() -> FileStore:
     """
     Returns the configured file store implementation based on FILE_STORE_BACKEND.
@@ -663,6 +688,13 @@ def get_default_file_store() -> FileStore:
     - Uses Google Cloud Storage with ADC/Workload Identity or service account keys.
     - Configuration via environment variables:
       - GCS_FILE_STORE_BUCKET_NAME, GCS_PROJECT_ID, GCS_SERVICE_ACCOUNT_KEY_PATH, etc.
+
+    When FILE_STORE_BACKEND=azure:
+    - Uses Azure Blob Storage with a connection string, a shared account key, or
+      DefaultAzureCredential (Managed Identity / Workload Identity).
+    - Configuration via environment variables:
+      - AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY,
+        AZURE_STORAGE_CONNECTION_STRING, AZURE_BLOB_CONTAINER_NAME, etc.
     """
     from onyx.configs.app_configs import FILE_STORE_BACKEND
     from onyx.configs.constants import FileStoreType
@@ -676,5 +708,8 @@ def get_default_file_store() -> FileStore:
 
     if backend == FileStoreType.GCS:
         return get_gcs_file_store()
+
+    if backend == FileStoreType.AZURE:
+        return get_azure_file_store()
 
     return get_s3_file_store()
