@@ -1,0 +1,83 @@
+#cloud-config
+# ============================================================================
+# First-boot provisioning for the NaArNi SearXNG VM.
+# ----------------------------------------------------------------------------
+# This file is a TEMPLATE. provision.sh substitutes the __*_B64__ placeholders
+# with the base64 of ../docker-compose.yml, ../config/settings.yml and
+# bootstrap.sh so the repo stays the single source of truth for all three.
+#
+# Docker comes from the Ubuntu archive (docker.io + docker-compose-v2) rather
+# than Docker's own apt repo -- one less external repo to trust and to keep
+# working, which matters on a box whose whole job is talking to the internet.
+# ============================================================================
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+
+# 1 GiB of RAM with no temp disk on B-series v2, so back it with a swapfile.
+# SearXNG idles well under this; swap is purely a safety net against OOM-kill
+# during an image pull or a traffic spike.
+swap:
+  filename: /swapfile
+  size: 1073741824
+  maxsize: 1073741824
+
+write_files:
+  - path: /opt/searxng/docker-compose.yml
+    encoding: b64
+    content: __COMPOSE_B64__
+    permissions: "0644"
+
+  - path: /opt/searxng/config/settings.yml
+    encoding: b64
+    content: __SETTINGS_B64__
+    permissions: "0644"
+
+  - path: /opt/searxng/bootstrap.sh
+    encoding: b64
+    content: __BOOTSTRAP_B64__
+    permissions: "0755"
+
+  # Unattended security updates. This host is deliberately unreachable from the
+  # internet, but it does fetch from it constantly, so keep it patched without
+  # anyone having to remember to log in.
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+  # Weekly refresh of the SearXNG image. Engine scrapers break as sites change,
+  # so a stale image quietly degrades result quality over weeks.
+  - path: /etc/systemd/system/searxng-update.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Refresh the SearXNG container image
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      WorkingDirectory=/opt/searxng
+      ExecStart=/usr/bin/docker compose pull --quiet
+      ExecStart=/usr/bin/docker compose up -d
+      ExecStart=/usr/bin/docker image prune -f
+
+  - path: /etc/systemd/system/searxng-update.timer
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Weekly SearXNG image refresh
+
+      [Timer]
+      OnCalendar=Sun 03:00
+      Persistent=true
+      RandomizedDelaySec=1h
+
+      [Install]
+      WantedBy=timers.target
+
+runcmd:
+  - ["/opt/searxng/bootstrap.sh"]

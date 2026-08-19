@@ -1,0 +1,56 @@
+# ============================================================================
+# SearXNG settings for NaArNi Gyan (Onyx) web search
+# ----------------------------------------------------------------------------
+# Minimal overrides on top of SearXNG's shipped defaults (`use_default_settings`)
+# so that upgrades keep picking up upstream engine definitions.
+#
+# The design goal is a ONE-WAY egress relay:
+#   Onyx  --(query)-->  SearXNG  --(query)-->  public search engines
+# Nothing on the public internet can reach this instance (enforced at the Azure
+# NSG layer), and this instance holds no state about who asked what.
+# ============================================================================
+use_default_settings: true
+
+general:
+  instance_name: "naarni-gyan-search"
+  # No public-facing branding, contact or donation links -- this is not a
+  # public instance and should never look like one.
+  donation_url: false
+  contact_url: false
+  # Do not accumulate per-engine timing/answer statistics. Metrics are the one
+  # place where SearXNG would retain a picture of what has been searched for.
+  enable_metrics: false
+
+server:
+  # Replaced with a per-deployment random value by cloud-init at first boot.
+  secret_key: "ultrasecretkey"
+  # The limiter (bot protection) exists to defend a *public* instance and is the
+  # only reason SearXNG needs Redis/Valkey. There is exactly one trusted caller
+  # here (the Onyx VM, allow-listed in the NSG), so turning it off removes both
+  # the false 429s that break API clients and an entire container.
+  limiter: false
+  public_instance: false
+  # Never proxy images -- that would make this host fetch arbitrary remote
+  # media on behalf of a browser, which is inbound-ish traffic we do not want.
+  image_proxy: false
+  method: "POST"
+
+search:
+  # JSON only. HTML is deliberately NOT enabled: anyone who does reach this
+  # host gets no browsable search UI, only the API that Onyx speaks.
+  formats:
+    - json
+  safe_search: 0
+  # No autocomplete -- it would fire an extra outbound request per keystroke
+  # for a UI nobody uses here.
+  autocomplete: ""
+  default_lang: "en"
+
+outgoing:
+  # Onyx runs several queries in parallel per answer, so keep upstream timeouts
+  # tight -- a slow engine should drop out rather than stall the whole answer.
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true

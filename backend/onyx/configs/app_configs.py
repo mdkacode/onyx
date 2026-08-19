@@ -730,6 +730,61 @@ MCP_SERVER_ALLOW_LOOPBACK = (
     os.environ.get("MCP_SERVER_ALLOW_LOOPBACK", "false").lower() == "true"
 )
 
+#####
+# Web Search Egress Guard
+#####
+# Web search is a one-way door: Onyx pulls information in from the public
+# internet and must not push anything out. The only bytes that leave on that
+# path are the LLM-authored search queries, so they are screened before they
+# reach any search provider. See
+# onyx/tools/tool_implementations/web_search/egress_guard.py.
+WEB_SEARCH_EGRESS_GUARD_ENABLED = (
+    os.environ.get("WEB_SEARCH_EGRESS_GUARD_ENABLED", "true").lower() == "true"
+)
+
+# Real search queries are short. An over-long one means the model pasted
+# document text instead of composing a query -- which leaks internal content
+# and returns poor results. Blocked, and the model is asked to rewrite.
+WEB_SEARCH_MAX_QUERY_CHARS = int(os.environ.get("WEB_SEARCH_MAX_QUERY_CHARS") or 256)
+
+# Exact-phrase (quoted) search over a long verbatim span is how internal prose
+# escapes a sentence at a time. Quoted spans longer than this are blocked.
+WEB_SEARCH_MAX_QUOTED_WORDS = int(os.environ.get("WEB_SEARCH_MAX_QUOTED_WORDS") or 12)
+
+
+def _default_internal_domains() -> list[str]:
+    """Derive this deployment's own hostnames from WEB_DOMAIN.
+
+    Gives self-hosted operators a working default with no configuration: if the
+    app is served from `gyan.naarni.com`, that host and `naarni.com` are treated
+    as internal and stripped from outbound queries.
+    """
+    domains: list[str] = []
+    host = (urllib.parse.urlparse(WEB_DOMAIN).hostname or "").lower()
+    if not host or host in {"localhost", "127.0.0.1"}:
+        return domains
+
+    domains.append(host)
+    labels = host.split(".")
+    if len(labels) > 2:
+        domains.append(".".join(labels[-2:]))
+    return domains
+
+
+# Hostnames/domains that identify our own infrastructure. Occurrences are
+# stripped from outbound queries so internal topology is never published to a
+# search engine. Comma-separated; defaults to the WEB_DOMAIN host.
+WEB_SEARCH_INTERNAL_DOMAINS = [
+    domain.strip()
+    for domain in (
+        os.environ.get("WEB_SEARCH_INTERNAL_DOMAINS", "").split(",")
+        if os.environ.get("WEB_SEARCH_INTERNAL_DOMAINS")
+        else _default_internal_domains()
+    )
+    if domain.strip()
+]
+
+
 HTML_BASED_CONNECTOR_TRANSFORM_LINKS_STRATEGY = os.environ.get(
     "HTML_BASED_CONNECTOR_TRANSFORM_LINKS_STRATEGY",
     HtmlBasedConnectorTransformLinksStrategy.STRIP,
