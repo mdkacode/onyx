@@ -21,6 +21,9 @@ from onyx.tools.models import WebSearchToolOverrideKwargs
 from onyx.tools.tool_implementations.utils import (
     convert_inference_sections_to_llm_string,
 )
+from onyx.tools.tool_implementations.web_search.egress_guard import (
+    guard_outbound_queries,
+)
 from onyx.tools.tool_implementations.web_search.models import DEFAULT_MAX_RESULTS
 from onyx.tools.tool_implementations.web_search.models import WebSearchResult
 from onyx.tools.tool_implementations.web_search.providers import (
@@ -156,7 +159,14 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                         QUERIES_FIELD: {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "One or more queries to look up on the web. Must contain only printable characters",
+                            "description": (
+                                "One or more queries to look up on the web. Must contain only "
+                                "printable characters. Each query is sent to a public search "
+                                "engine, so write short, generic keyword queries using public "
+                                "terminology. Never include internal or confidential text, "
+                                "customer or employee names, internal identifiers, credentials, "
+                                "or verbatim excerpts from internal documents."
+                            ),
                         },
                     },
                     "required": [QUERIES_FIELD],
@@ -223,7 +233,32 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                 ),
             )
 
-        # Emit queries
+        # Web search is a one-way door -- information comes in, nothing of ours
+        # goes out except these query strings. Screen them before they reach the
+        # provider. Blocked queries are never sent.
+        verdicts = guard_outbound_queries(queries)
+        queries = [
+            verdict.sanitized for verdict in verdicts if verdict.sanitized is not None
+        ]
+        if not queries:
+            reasons = "\n".join(
+                f"- {verdict.block_reason}"
+                for verdict in verdicts
+                if verdict.block_reason
+            )
+            raise ToolCallException(
+                message=f"All web search queries were blocked before egress:\n{reasons}",
+                llm_facing_message=(
+                    f"None of those queries could be sent to the web:\n{reasons}\n"
+                    "Only the query text leaves this system, so it must be a short, "
+                    "generic keyword query. Rewrite it using public terminology, with "
+                    "no internal names, identifiers, credentials, or verbatim excerpts "
+                    "from internal documents, then try again."
+                ),
+            )
+
+        # Emit the queries that actually went out, not what the model proposed,
+        # so the UI shows the user exactly what left the network.
         self.emitter.emit(
             Packet(
                 placement=placement,

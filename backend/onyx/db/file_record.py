@@ -1,5 +1,6 @@
 from sqlalchemy import and_
 from sqlalchemy import cast
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import insert
@@ -9,6 +10,8 @@ from onyx.background.task_utils import QUERY_REPORT_NAME_PREFIX
 from onyx.configs.constants import FileOrigin
 from onyx.configs.constants import FileType
 from onyx.db.enums import IndexingStatus
+from onyx.db.models import ChatMessage
+from onyx.db.models import ChatSession
 from onyx.db.models import FileRecord
 from onyx.db.models import IndexAttempt
 
@@ -176,3 +179,44 @@ def upsert_filerecord(
     db_session.execute(stmt)
 
     return db_session.get(FileRecord, file_id)  # ty: ignore[invalid-return-type]
+
+
+def backfill_generated_report_owners(db_session: Session) -> tuple[int, int]:
+    """Record an owner on GENERATED_REPORT rows written before we tracked one.
+
+    PdfGenerationTool now stamps `file_metadata["user_id"]` at save time, which
+    is what authorizes the later download. Rows created before that change have
+    a JSON `null` metadata and are therefore unreachable through
+    `/chat/file/{file_id}`.
+
+    Ownership is recovered from the chat transcript: the tool hands the user a
+    bare `/chat/file/{file_id}` URL in the assistant's message body, so the
+    session containing that URL identifies the owner.
+
+    Returns (updated, unresolved).
+    """
+    orphaned = list(
+        db_session.scalars(
+            select(FileRecord).where(
+                FileRecord.file_origin == FileOrigin.GENERATED_REPORT,
+                func.jsonb_typeof(FileRecord.file_metadata) != "object",
+            )
+        )
+    )
+
+    updated = 0
+    for record in orphaned:
+        owner_id = db_session.scalar(
+            select(ChatSession.user_id)
+            .join(ChatMessage, ChatMessage.chat_session_id == ChatSession.id)
+            .where(ChatMessage.message.contains(record.file_id))
+            .where(ChatSession.user_id.isnot(None))
+            .limit(1)
+        )
+        if owner_id is None:
+            continue
+        record.file_metadata = {"user_id": str(owner_id)}
+        updated += 1
+
+    db_session.commit()
+    return updated, len(orphaned) - updated

@@ -245,3 +245,39 @@ az vm start --resource-group naarni-cad-vm_group --name naarni-ai-vm
 # Check VM status
 az vm get-instance-view --resource-group naarni-cad-vm_group --name naarni-ai-vm --query "instanceView.statuses[1].displayStatus" -o tsv
 ```
+
+---
+
+## Web Search (SearXNG relay)
+
+Web search runs against a **private SearXNG instance on its own VM**, not a
+third-party search API. Full detail in [`deployment/searxng/README.md`](searxng/README.md).
+
+| Item | Value |
+|------|-------|
+| **VM** | `naarni-searxng-vm` (Standard_B2ts_v2, ~₹1,270/mo all-in) |
+| **Endpoint** | `http://172.16.0.10:8080` — VNet only, no public inbound |
+| **Reachable by** | `naarni-ai-vm` (172.16.0.5) only, enforced by NSG |
+
+```bash
+# Health + one-way boundary check (read-only)
+deployment/searxng/azure/status.sh
+
+# Logs, without opening any inbound port
+az vm run-command invoke -g naarni-cad-vm_group -n naarni-searxng-vm \
+  --command-id RunShellScript \
+  --scripts 'docker compose -f /opt/searxng/docker-compose.yml logs --tail=50'
+
+# Rebuild from scratch (idempotent; --dry-run to preview)
+deployment/searxng/azure/provision.sh
+```
+
+**If web search stops working**, check in this order: the container is up
+(`status.sh`), the provider is still active in Admin Panel → Web Search, and
+the NSG still allow-lists 172.16.0.5. Note that queries are screened before
+they leave — a blocked query is logged as `Web search egress guard BLOCKED`
+in the api_server log and is expected behaviour, not a fault.
+
+**Do not** switch the content provider to Firecrawl. Page fetching must stay on
+the built-in Onyx Web Crawler, otherwise every URL Onyx opens is sent to a
+third-party SaaS.

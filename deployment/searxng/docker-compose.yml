@@ -1,0 +1,55 @@
+# ============================================================================
+# SearXNG -- private metasearch relay for NaArNi Gyan (Onyx)
+# ----------------------------------------------------------------------------
+# Single container by design. SearXNG only needs Redis/Valkey for its bot
+# limiter, and the limiter is off (see config/settings.yml), so this fits
+# comfortably on a 1 GiB burstable VM.
+#
+# Deployed by ../azure/provision.sh onto a dedicated VM. `.env` is written by
+# cloud-init at first boot and holds SEARXNG_BIND_IP + SEARXNG_SECRET.
+# ============================================================================
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+
+    # Bind to the VNet-private address only. Even if the NSG were later
+    # loosened, the port is not listening on the public interface.
+    ports:
+      - "${SEARXNG_BIND_IP:-127.0.0.1}:8080:8080"
+
+    volumes:
+      - ./config:/etc/searxng:rw
+
+    environment:
+      - SEARXNG_BASE_URL=http://${SEARXNG_BIND_IP:-127.0.0.1}:8080/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?SEARXNG_SECRET must be set in .env}
+      # 2 workers x 4 threads matches the 2 vCPU host and is enough for the
+      # handful of parallel queries a single Onyx answer fans out.
+      - UWSGI_WORKERS=2
+      - UWSGI_THREADS=4
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
+    # Search queries are the sensitive payload here. Keep almost no history on
+    # disk: one small rotating file, purely for crash diagnosis.
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    mem_limit: 512m

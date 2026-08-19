@@ -17,6 +17,12 @@ from onyx.tools.tool_implementations.web_search.clients.google_pse_client import
     GooglePSEClient,
 )
 from onyx.tools.tool_implementations.web_search.clients.searxng_client import (
+    DEFAULT_MAX_PAGES as DEFAULT_SEARXNG_MAX_PAGES,
+)
+from onyx.tools.tool_implementations.web_search.clients.searxng_client import (
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_SEARXNG_TIMEOUT_SECONDS,
+)
+from onyx.tools.tool_implementations.web_search.clients.searxng_client import (
     SearXNGClient,
 )
 from onyx.tools.tool_implementations.web_search.clients.serper_client import (
@@ -78,6 +84,23 @@ def build_search_provider_from_config(
         return SearXNGClient(
             searxng_base_url,
             num_results=num_results,
+            timeout_seconds=_parse_positive_int_config(
+                raw_value=config.get("timeout_seconds"),
+                default=DEFAULT_SEARXNG_TIMEOUT_SECONDS,
+                provider_name="SearXNG",
+                config_key="timeout_seconds",
+            ),
+            max_pages=_parse_positive_int_config(
+                raw_value=config.get("max_pages"),
+                default=DEFAULT_SEARXNG_MAX_PAGES,
+                provider_name="SearXNG",
+                config_key="max_pages",
+            ),
+            language=config.get("language"),
+            time_range=config.get("time_range"),
+            safesearch=config.get("safesearch"),
+            categories=config.get("categories"),
+            engines=config.get("engines"),
         )
 
     # All other providers require an API key
