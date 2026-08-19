@@ -47,13 +47,13 @@ export default function BuildWelcome({
       <div className="w-full max-w-(--app-page-main-content-width) flex flex-col">
         {/* Branding on the left, model picker on the right — mirrors AppPage. */}
         <div className="flex flex-row items-center justify-between gap-4 pb-6">
-          {/* Typed Onyx wordmark + "Craft" (heading-h2, 24/36 — matches the
-              main app's chat welcome). The wordmark's letters sit in the
-              upper-middle of its box (baseline ~79% down), so we baseline-align
-              and nudge the wordmark down (~0.21 × size) to share Craft's
-              baseline. */}
+          {/* Typed NaArNi wordmark + "Craft" (heading-h2, 24/36 — matches the
+              main app's chat welcome). The lockup aligns on the mark's bottom
+              edge, but the wordmark is set at 0.45 × the mark's height and
+              vertically centered against it, so its baseline lands ~0.275 ×
+              size above the lockup's; nudge it down to share Craft's baseline. */}
           <div className="flex flex-row items-baseline gap-2">
-            <Logo onyxBranded size={28} className="translate-y-[6px]" />
+            <Logo onyxBranded size={28} className="translate-y-[8px]" />
             <Text font="heading-h2" color="text-05">
               Craft
             </Text>
