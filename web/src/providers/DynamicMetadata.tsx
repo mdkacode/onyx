@@ -20,9 +20,22 @@ export default function DynamicMetadata() {
     [enterpriseSettings]
   );
 
-  const favicon = enterpriseSettings?.use_custom_logo
-    ? `/api/enterprise-settings/logo?v=${cacheBuster}`
-    : "/favicon.ico";
+  if (enterpriseSettings?.use_custom_logo) {
+    return (
+      <link
+        rel="icon"
+        href={`/api/enterprise-settings/logo?v=${cacheBuster}`}
+      />
+    );
+  }
 
-  return <link rel="icon" href={favicon} />;
+  // `icon.svg` recolors itself with the browser's color scheme, so the NaArNi
+  // mark stays visible on both light and dark tab bars. Browsers that ignore
+  // SVG favicons (Safari) fall back to the `.ico`.
+  return (
+    <>
+      <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+      <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+    </>
+  );
 }

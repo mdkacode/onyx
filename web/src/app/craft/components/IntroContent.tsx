@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, type CSSProperties } from "react";
 import { motion } from "motion/react";
 import { track, AnalyticsEvent } from "@/lib/analytics";
 import { OnyxLogoTypeIcon } from "@/components/icons/icons";
@@ -31,8 +31,18 @@ export default function BuildModeIntroContent({
           className="w-full relative"
         >
           <div className="grid grid-cols-[1fr_auto_1fr] items-end">
-            <div className="flex justify-end">
-              <OnyxLogoTypeIcon size={385} className="text-white" />
+            {/* The intro plays over a dark backdrop in both themes, so the
+                brand mark's ink is pinned to white rather than following
+                `--theme-primary-05`. */}
+            <div
+              className="flex justify-end"
+              style={
+                {
+                  "--theme-primary-05": "var(--onyx-chrome-00)",
+                } as CSSProperties
+              }
+            >
+              <OnyxLogoTypeIcon size={385} />
             </div>
             <div className="w-8"></div>
             <div className="flex justify-start">
