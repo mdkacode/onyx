@@ -1,29 +1,22 @@
 import type { IconProps } from "@opal/types";
 
-// NaArNi brand mark — three green hexagons with a gradient. Replaces the
-// upstream Onyx logo across every @opal/logos surface (sidebar, header, etc.).
+// NaArNi brand mark. Monochrome by design: `--theme-primary-05` is near-black
+// in light mode and near-white in dark mode, so the single path covers both
+// the light and dark artwork we were given.
 const SvgOnyxLogo = ({ size, ...props }: IconProps) => (
   <svg
     height={size}
-    viewBox="12 3 76 74"
+    viewBox="0 0 106.545 120.0"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
     {...props}
   >
-    <defs>
-      <linearGradient id="naarniGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stopColor="#7EEDB4" />
-        <stop offset="100%" stopColor="#2ECC71" />
-      </linearGradient>
-    </defs>
-    {/* Top hexagon */}
-    <polygon points="50,5 68,15 68,35 50,45 32,35 32,15" fill="url(#naarniGrad)" />
-    {/* Bottom-left hexagon */}
-    <polygon points="32,35 50,45 50,65 32,75 14,65 14,45" fill="url(#naarniGrad)" />
-    {/* Bottom-right hexagon */}
-    <polygon points="68,35 86,45 86,65 68,75 50,65 50,45" fill="url(#naarniGrad)" />
-    {/* Center highlight */}
-    <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      d="M48.93 0.04L1.88 27.2L0.95 27.96L0.49 28.59L0.11 29.5L0 30.23L0 87.91L0.13 88.72L0.48 89.54L0.95 90.18L1.88 90.93L51.29 119.46L52.38 119.9L53.47 120L54.47 119.81L55.56 119.27L102.31 92.27L90.07 85.19L55.1 105.38L54.56 105.63L53.83 105.82L52.74 105.83L52.02 105.65L51.11 105.2L14.59 84.12L13.5 83.4L12.74 82.46L12.39 81.64L12.23 80.73L12.23 37.4L12.3 36.86L12.56 36.04L13.28 34.95L14.14 34.29L49.02 14.15L49.06 0.07L49.02 0ZM57.47 0.02L57.44 8.61L57.62 10.25L57.98 11.61L58.61 13.06L59.35 14.24L60.46 15.53L61.55 16.44L62.55 17.08L94.28 35.41L94.28 72.46L94.41 73.83L94.58 74.64L94.96 75.83L95.67 77.28L96.58 78.55L97.89 79.85L99.34 80.85L106.51 84.95L106.5 28.32Z"
+      fill="var(--theme-primary-05)"
+    />
   </svg>
 );
 export default SvgOnyxLogo;

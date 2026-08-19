@@ -231,34 +231,17 @@ export const OnyxIcon = ({
     <svg
       style={{ width: `${size}px`, height: `${size}px` }}
       className={`w-[${size}px] h-[${size}px] ` + className}
-      viewBox="12 3 76 74"
+      viewBox="0 0 106.545 120.0"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      {/* NaArNi Logo — 3 hexagons with gradient */}
-      <defs>
-        <linearGradient id="naarniGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#7EEDB4" />
-          <stop offset="100%" stopColor="#2ECC71" />
-        </linearGradient>
-      </defs>
-      {/* Top hexagon */}
-      <polygon
-        points="50,5 68,15 68,35 50,45 32,35 32,15"
-        fill="url(#naarniGrad)"
+      {/* NaArNi brand mark */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M48.93 0.04L1.88 27.2L0.95 27.96L0.49 28.59L0.11 29.5L0 30.23L0 87.91L0.13 88.72L0.48 89.54L0.95 90.18L1.88 90.93L51.29 119.46L52.38 119.9L53.47 120L54.47 119.81L55.56 119.27L102.31 92.27L90.07 85.19L55.1 105.38L54.56 105.63L53.83 105.82L52.74 105.83L52.02 105.65L51.11 105.2L14.59 84.12L13.5 83.4L12.74 82.46L12.39 81.64L12.23 80.73L12.23 37.4L12.3 36.86L12.56 36.04L13.28 34.95L14.14 34.29L49.02 14.15L49.06 0.07L49.02 0ZM57.47 0.02L57.44 8.61L57.62 10.25L57.98 11.61L58.61 13.06L59.35 14.24L60.46 15.53L61.55 16.44L62.55 17.08L94.28 35.41L94.28 72.46L94.41 73.83L94.58 74.64L94.96 75.83L95.67 77.28L96.58 78.55L97.89 79.85L99.34 80.85L106.51 84.95L106.5 28.32Z"
+        fill="var(--theme-primary-05)"
       />
-      {/* Bottom-left hexagon */}
-      <polygon
-        points="32,35 50,45 50,65 32,75 14,65 14,45"
-        fill="url(#naarniGrad)"
-      />
-      {/* Bottom-right hexagon */}
-      <polygon
-        points="68,35 86,45 86,65 68,75 50,65 50,45"
-        fill="url(#naarniGrad)"
-      />
-      {/* Center white hexagon (overlap area) */}
-      <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
     </svg>
   );
 };
@@ -266,7 +249,8 @@ export const OnyxLogoTypeIcon = ({
   size = 16,
   className = defaultTailwindCSS,
 }: IconProps) => {
-  const aspectRatio = 3.5;
+  // Horizontal lockup: mark + gap + wordmark, measured in mark-heights.
+  const aspectRatio = 5.3236;
   const height = size / aspectRatio;
 
   return (
@@ -275,44 +259,26 @@ export const OnyxLogoTypeIcon = ({
       xmlns="http://www.w3.org/2000/svg"
       width={size}
       height={height}
-      viewBox="0 0 420 120"
+      viewBox="0 0 638.83 120.0"
       style={{ width: `${size}px`, height: `${height}px` }}
       className={`w-[${size}px] h-[${height}px] ` + className}
     >
-      <defs>
-        <linearGradient id="naarniLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#7EEDB4" />
-          <stop offset="100%" stopColor="#2ECC71" />
-        </linearGradient>
-      </defs>
-      {/* Hexagon icon — scaled to fill height */}
-      <g transform="translate(2,12) scale(1.05)">
-        <polygon
-          points="50,5 68,15 68,35 50,45 32,35 32,15"
-          fill="url(#naarniLogoGrad)"
+      {/* NaArNi brand mark */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M48.93 0.04L1.88 27.2L0.95 27.96L0.49 28.59L0.11 29.5L0 30.23L0 87.91L0.13 88.72L0.48 89.54L0.95 90.18L1.88 90.93L51.29 119.46L52.38 119.9L53.47 120L54.47 119.81L55.56 119.27L102.31 92.27L90.07 85.19L55.1 105.38L54.56 105.63L53.83 105.82L52.74 105.83L52.02 105.65L51.11 105.2L14.59 84.12L13.5 83.4L12.74 82.46L12.39 81.64L12.23 80.73L12.23 37.4L12.3 36.86L12.56 36.04L13.28 34.95L14.14 34.29L49.02 14.15L49.06 0.07L49.02 0ZM57.47 0.02L57.44 8.61L57.62 10.25L57.98 11.61L58.61 13.06L59.35 14.24L60.46 15.53L61.55 16.44L62.55 17.08L94.28 35.41L94.28 72.46L94.41 73.83L94.58 74.64L94.96 75.83L95.67 77.28L96.58 78.55L97.89 79.85L99.34 80.85L106.51 84.95L106.5 28.32Z"
+        fill="var(--theme-primary-05)"
+      />
+      {/* "NAARNI" wordmark, scaled down and vertically centered on the mark */}
+      <g transform="translate(144.05, 33.00) scale(0.54000)">
+        <path
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M20.55 0L17.61 0.31L13.42 1.52L10.06 3.22L6.71 5.79L2.74 10.9L1.17 14.26L0.28 17.61L0 20.13L0 99.79L26 99.79L26 29.77L26 29.35L26.42 29.24L96.02 89.81L104.82 97L109.43 99.04L113.63 99.88L119.5 100L123.69 99.55L127.88 98.25L131.66 96.13L134.17 94.1L136.85 90.99L139.67 85.53L140.74 80.08L140.74 0.42L140.46 0L115.3 0L114.74 0.42L114.74 70.44L114.47 71.02L36.9 3.66L32.71 1.5L28.51 0.28ZM229.35 0L158.49 99.84L189.52 99.97L203.61 79.25L204.61 78.27L269.18 78.27L269.6 77.99L261.63 66.75L257.86 63.57L252.83 61.13L246.96 60.1L216.86 59.96L243.6 20.24L297.32 99.79L330.44 99.79L259.96 0.29L259.54 0ZM423.89 0L421.68 2.52L352.81 99.79L383.64 100L398.74 78.29L463.73 78.26L463.94 77.99L463.42 77.15L456.35 67.09L451.57 63.15L446.95 61.05L441.5 60.1L411.16 59.96L436.73 21.8L437.73 20.38L438.15 20.34L491.82 99.95L524.76 99.79L454.08 0.12ZM549.68 0L549.26 0.42L549.26 99.79L577.77 99.79L577.77 19.71L578.19 19.5L646.11 19.5L652.82 20.39L657.85 22.5L660.03 24.32L661.81 26.84L662.88 30.61L662.88 33.12L662.22 36.06L660.93 38.58L657.43 41.7L653.66 43.35L649.05 44.24L609.22 44.3L603.35 45.2L598.31 47.64L594.04 51.57L592.3 54.09L590.68 57.86L589.93 63.31L590.35 63.59L645.69 63.59L649.89 64.01L653.24 64.81L655.76 66.09L657.24 67.51L658.43 69.6L658.83 71.28L658.97 99.79L687.34 99.79L687.34 72.96L686.03 66.25L683.57 61.64L680.83 58.7L677.56 56.42L672.28 54.09L680.07 50.04L685.11 45.53L688.6 40.25L689.77 37.32L690.64 33.54L690.98 30.19L690.77 25.58L689.02 18.87L686.99 15.1L684.77 12.16L680.49 8.3L675.46 5.27L669.17 2.77L662.05 1.1L654.92 0.22ZM740.45 0L737.1 0.34L732.9 1.54L729.55 3.24L726.2 5.79L722.21 10.9L720.66 14.26L719.77 17.61L719.49 19.71L719.49 99.79L745.48 99.79L745.49 29.35L745.9 29.21L821.37 94.9L824.31 97L828.92 99.04L833.11 99.91L839.4 100L843.59 99.49L847.37 98.25L851.14 96.13L853.66 94.1L856.17 91.2L858.85 86.37L859.67 83.86L860.23 80.08L860.23 0.42L859.95 0L834.79 0L834.23 0.42L834.23 70.44L833.95 71.03L758.06 4.95L754.29 2.43L750.09 0.79L745.06 0ZM888.46 0L888.04 0.42L888.04 99.79L916.13 99.93L916.27 20.13L915.45 15.52L913.75 11.32L911.18 7.55L909 5.37L905.65 2.93L901.87 1.17L898.52 0.28Z"
+          fill="var(--theme-primary-05)"
         />
-        <polygon
-          points="32,35 50,45 50,65 32,75 14,65 14,45"
-          fill="url(#naarniLogoGrad)"
-        />
-        <polygon
-          points="68,35 86,45 86,65 68,75 50,65 50,45"
-          fill="url(#naarniLogoGrad)"
-        />
-        <polygon points="50,35 58,40 58,50 50,55 42,50 42,40" fill="white" />
       </g>
-      {/* NaArNi text — uses currentColor for dark mode support */}
-      <text
-        x="108"
-        y="78"
-        fontFamily="'Georgia', 'Times New Roman', serif"
-        fontWeight="700"
-        fontSize="56"
-        letterSpacing="2"
-        fill="currentColor"
-      >
-        NaArNi
-      </text>
     </svg>
   );
 };

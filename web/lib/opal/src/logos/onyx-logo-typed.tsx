@@ -11,8 +11,15 @@ interface OnyxLogoTypedProps {
 // This ratio is not some random, magical number; it is available on Figma.
 const HEIGHT_TO_GAP_RATIO = 5 / 16;
 
+// The NaArNi wordmark is much wider than it is tall, so it is set to a
+// fraction of the mark's height rather than matching it. Mirrors the
+// proportions of the stacked lockup in the brand assets.
+const HEIGHT_TO_WORDMARK_RATIO = 0.45;
+
 const SvgOnyxLogoTyped = ({ size: height, className }: OnyxLogoTypedProps) => {
   const gap = height != null ? height * HEIGHT_TO_GAP_RATIO : undefined;
+  const wordmarkHeight =
+    height != null ? height * HEIGHT_TO_WORDMARK_RATIO : undefined;
 
   return (
     <div
@@ -20,7 +27,7 @@ const SvgOnyxLogoTyped = ({ size: height, className }: OnyxLogoTypedProps) => {
       style={{ gap }}
     >
       <SvgOnyxLogo size={height} />
-      <SvgOnyxTyped size={height} />
+      <SvgOnyxTyped size={wordmarkHeight} />
     </div>
   );
 };
