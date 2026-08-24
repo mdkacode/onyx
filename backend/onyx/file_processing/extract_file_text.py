@@ -723,6 +723,7 @@ def extract_file_text(
     file_name: str,
     break_on_unprocessable: bool = True,
     extension: str | None = None,
+    allow_unstructured: bool = True,
 ) -> str:
     """
     Legacy function that returns *only text*, ignoring embedded images.
@@ -730,6 +731,11 @@ def extract_file_text(
 
     NOTE: Ignoring seems to be defined as returning an empty string for files it can't
     handle (such as images).
+
+    Set ``allow_unstructured=False`` to force local parsing even when an
+    Unstructured API key is configured. Callers handling content that must not
+    leave the deployment (e.g. federated results read live from a user's own
+    account) use this so the bytes are never sent to a third-party service.
     """
     extension_to_function: dict[str, Callable[[IO[Any]], str]] = {
         ".pdf": pdf_to_text,
@@ -742,7 +748,7 @@ def extract_file_text(
     }
 
     try:
-        if get_unstructured_api_key():
+        if allow_unstructured and get_unstructured_api_key():
             try:
                 return unstructured_to_text(file, file_name)
             except Exception as unstructured_error:

@@ -1,3 +1,5 @@
+import io
+import os
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -10,6 +12,7 @@ from typing_extensions import override
 
 from onyx.configs.constants import DocumentSource
 from onyx.context.search.models import ChunkIndexRequest
+from onyx.context.search.models import IndexFilters
 from onyx.context.search.models import InferenceChunk
 from onyx.federated_connectors.interfaces import FederatedConnector
 from onyx.federated_connectors.m365.models import M365Config
@@ -17,8 +20,12 @@ from onyx.federated_connectors.m365.models import M365Credentials
 from onyx.federated_connectors.models import CredentialField
 from onyx.federated_connectors.models import EntityField
 from onyx.federated_connectors.models import OAuthResult
+from onyx.file_processing.extract_file_text import extract_file_text
+from onyx.file_processing.extract_file_text import get_file_ext
+from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.onyxbot.slack.models import SlackContext
 from onyx.utils.logger import setup_logger
+from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 
 logger = setup_logger()
 
@@ -34,6 +41,35 @@ SCOPES = [
 
 MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
 MICROSOFT_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+# --- File content enrichment ------------------------------------------------
+# Graph's search API only returns a one-line `summary` per hit, which is far too
+# thin for the LLM to answer from. For the top-ranked hits we download the file
+# itself and extract its real text. Each download is an extra Graph round-trip,
+# so these bounds trade latency and memory for answer quality.
+
+# How many of the top-ranked file hits get their content downloaded.
+MAX_FILES_TO_ENRICH = int(os.environ.get("M365_MAX_FILES_TO_ENRICH", "10"))
+# Files bigger than this are skipped without being downloaded at all.
+MAX_FILE_DOWNLOAD_BYTES = int(
+    os.environ.get("M365_MAX_FILE_DOWNLOAD_BYTES", str(10 * 1024 * 1024))
+)
+# Extracted text is truncated here so one large file can't crowd every other
+# result out of the LLM context window.
+MAX_FILE_TEXT_CHARS = int(os.environ.get("M365_MAX_FILE_TEXT_CHARS", "8000"))
+FILE_DOWNLOAD_TIMEOUT_SECONDS = int(
+    os.environ.get("M365_FILE_DOWNLOAD_TIMEOUT_SECONDS", "20")
+)
+# Downloads run concurrently, but stay bounded so one query can't saturate the
+# worker's thread pool or its Graph rate limit.
+FILE_DOWNLOAD_MAX_WORKERS = int(os.environ.get("M365_FILE_DOWNLOAD_MAX_WORKERS", "5"))
+# Federated results are the files a user chose *not* to index precisely because
+# they are personal, so by default we parse them in-process rather than handing
+# the bytes to the Unstructured cloud API even when one is configured for the
+# indexing pipeline. Set to "true" only if that egress is acceptable to you.
+ALLOW_UNSTRUCTURED_API = (
+    os.environ.get("M365_ALLOW_UNSTRUCTURED_API", "false").lower() == "true"
+)
 
 
 class M365FederatedConnector(FederatedConnector):
@@ -361,7 +397,9 @@ class M365FederatedConnector(FederatedConnector):
                 json=file_request,
             )
             file_response.raise_for_status()
-            all_chunks.extend(self._parse_search_response(file_response.json()))
+            all_chunks.extend(
+                self._parse_file_search_response(file_response.json(), access_token)
+            )
         except requests.exceptions.HTTPError as e:
             logger.error(
                 f"Microsoft Graph file search HTTP error: {e.response.status_code} "
@@ -400,6 +438,176 @@ class M365FederatedConnector(FederatedConnector):
 
         return all_chunks
 
+    @staticmethod
+    def _collect_hits(response_data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Flatten the nested Graph search response down to a list of hits."""
+        hits: list[dict[str, Any]] = []
+
+        search_responses: list[dict[str, Any]] = response_data.get("value", [])
+        for search_response in search_responses:
+            hits_containers: list[dict[str, Any]] = search_response.get(
+                "hitsContainers", []
+            )
+            for container in hits_containers:
+                hits.extend(container.get("hits", []))
+
+        return hits
+
+    def _fetch_file_text(
+        self, resource: dict[str, Any], access_token: str
+    ) -> str | None:
+        """Download one driveItem and extract its text, or None if unavailable.
+
+        PRIVACY: the download is authorized with ``access_token`` -- the OAuth
+        token of the user who asked the question -- and never with the
+        application credentials held in ``self.m365_credentials``. Microsoft
+        Graph therefore evaluates the request against that one user's own
+        permissions: a file they cannot open in OneDrive/SharePoint returns
+        403/404 here too, so one user can never pull another user's content.
+
+        The extracted text is returned to the caller and lives only for the
+        duration of this request. It is never written to Vespa, Postgres,
+        Redis, or disk, and is never cached across users or queries.
+        """
+        name: str = resource.get("name", "")
+        if not name:
+            return None
+
+        # Only bother with formats extract_file_text can actually read; images
+        # and unknown binaries would just burn a round-trip.
+        extension = get_file_ext(name)
+        if extension not in OnyxFileExtensions.TEXT_AND_DOCUMENT_EXTENSIONS:
+            return None
+
+        # Skip oversized files before downloading rather than after.
+        size: int | None = resource.get("size")
+        if size is not None and size > MAX_FILE_DOWNLOAD_BYTES:
+            logger.debug(
+                "Skipping M365 file content fetch, file exceeds size cap: %s (%s bytes)",
+                name,
+                size,
+            )
+            return None
+
+        parent_ref: dict[str, Any] = resource.get("parentReference", {})
+        drive_id: str = parent_ref.get("driveId", "")
+        item_id: str = resource.get("id", "")
+        if not drive_id or not item_id:
+            return None
+
+        url = f"{MICROSOFT_GRAPH_BASE}/drives/{drive_id}/items/{item_id}/content"
+
+        try:
+            # Graph 302-redirects to a short-lived pre-authenticated download
+            # URL. `requests` drops the Authorization header when the redirect
+            # crosses hosts, so the user's token is never sent to the CDN.
+            with requests.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                stream=True,
+                timeout=FILE_DOWNLOAD_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+
+                # Stream with a hard ceiling so a file that lied about (or
+                # omitted) its size can't exhaust worker memory.
+                buffer = io.BytesIO()
+                downloaded = 0
+                for block in response.iter_content(chunk_size=64 * 1024):
+                    downloaded += len(block)
+                    if downloaded > MAX_FILE_DOWNLOAD_BYTES:
+                        logger.debug(
+                            "Aborting M365 file content fetch, stream exceeded "
+                            "size cap: %s",
+                            name,
+                        )
+                        return None
+                    buffer.write(block)
+        except requests.exceptions.HTTPError as e:
+            # 403/404 here is the expected outcome when the user lacks access to
+            # a file that Graph search still surfaced metadata for -- not a bug.
+            logger.debug(
+                "M365 file content fetch failed for %s: HTTP %s",
+                name,
+                e.response.status_code,
+            )
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning("M365 file content fetch request error for %s: %s", name, e)
+            return None
+
+        try:
+            text = extract_file_text(
+                buffer,
+                name,
+                break_on_unprocessable=False,
+                extension=extension,
+                allow_unstructured=ALLOW_UNSTRUCTURED_API,
+            )
+        except Exception as e:
+            logger.warning("Failed to extract text from M365 file %s: %s", name, e)
+            return None
+
+        if not text.strip():
+            return None
+
+        return text[:MAX_FILE_TEXT_CHARS]
+
+    def _parse_file_search_response(
+        self, response_data: dict[str, Any], access_token: str
+    ) -> list[InferenceChunk]:
+        """Parse driveItem hits, giving the top-ranked ones their real content.
+
+        Hits beyond ``MAX_FILES_TO_ENRICH`` still come back, just with Graph's
+        summary as their content the way they always did.
+        """
+        hits = self._collect_hits(response_data)
+        if not hits:
+            return []
+
+        # Graph ranks the best hit as 1, so ascending order is most-relevant
+        # first. Hits without a rank sort last.
+        ranked = sorted(hits, key=lambda hit: hit.get("rank") or len(hits) + 1)
+        to_enrich = ranked[:MAX_FILES_TO_ENRICH]
+
+        fetched_texts: list[str | None] = []
+        if to_enrich:
+            fetched_texts = run_functions_tuples_in_parallel(
+                [
+                    (self._fetch_file_text, (hit.get("resource", {}), access_token))
+                    for hit in to_enrich
+                ],
+                allow_failures=True,
+                max_workers=FILE_DOWNLOAD_MAX_WORKERS,
+            )
+
+        enriched_count = sum(1 for text in fetched_texts if text)
+        logger.info(
+            "M365 file search: %s hits, %s of %s attempted downloads yielded text",
+            len(ranked),
+            enriched_count,
+            len(to_enrich),
+        )
+
+        chunks: list[InferenceChunk] = []
+        for index, hit in enumerate(ranked):
+            resource: dict[str, Any] = hit.get("resource", {})
+            if not resource:
+                continue
+
+            full_text = fetched_texts[index] if index < len(fetched_texts) else None
+            try:
+                chunk = self._file_to_inference_chunk(
+                    hit, resource, full_text=full_text
+                )
+                if chunk is not None:
+                    chunks.append(chunk)
+            except Exception as e:
+                logger.warning("Failed to parse M365 file search hit: %s", e)
+                continue
+
+        return chunks
+
     def _parse_search_response(
         self, response_data: dict[str, Any]
     ) -> list[InferenceChunk]:
@@ -413,24 +621,14 @@ class M365FederatedConnector(FederatedConnector):
         """
         chunks: list[InferenceChunk] = []
 
-        search_responses: list[dict[str, Any]] = response_data.get("value", [])
-
-        for search_response in search_responses:
-            hits_containers: list[dict[str, Any]] = search_response.get(
-                "hitsContainers", []
-            )
-
-            for container in hits_containers:
-                hits: list[dict[str, Any]] = container.get("hits", [])
-
-                for hit in hits:
-                    try:
-                        chunk = self._hit_to_inference_chunk(hit)
-                        if chunk is not None:
-                            chunks.append(chunk)
-                    except Exception as e:
-                        logger.warning(f"Failed to parse M365 search hit: {e}")
-                        continue
+        for hit in self._collect_hits(response_data):
+            try:
+                chunk = self._hit_to_inference_chunk(hit)
+                if chunk is not None:
+                    chunks.append(chunk)
+            except Exception as e:
+                logger.warning(f"Failed to parse M365 search hit: {e}")
+                continue
 
         return chunks
 
@@ -520,9 +718,16 @@ class M365FederatedConnector(FederatedConnector):
         )
 
     def _file_to_inference_chunk(
-        self, hit: dict[str, Any], resource: dict[str, Any]
+        self,
+        hit: dict[str, Any],
+        resource: dict[str, Any],
+        full_text: str | None = None,
     ) -> InferenceChunk | None:
-        """Convert a file/driveItem search hit to an InferenceChunk."""
+        """Convert a file/driveItem search hit to an InferenceChunk.
+
+        ``full_text`` is the file's extracted text when we were able to
+        download it; when it is None we fall back to Graph's summary snippet.
+        """
         resource_id: str = resource.get("id", "")
         name: str = resource.get("name", "Unknown")
         web_url: str = resource.get("webUrl", "")
@@ -549,7 +754,9 @@ class M365FederatedConnector(FederatedConnector):
                 if isinstance(hl, str):
                     highlights.append(hl)
 
-        content = summary if summary else name
+        # Prefer the file's real extracted text -- the summary is a single line
+        # and gives the LLM almost nothing to reason over.
+        content = full_text or summary or name
 
         # Build metadata
         metadata: dict[str, str | list[str]] = {}
@@ -596,3 +803,48 @@ class M365FederatedConnector(FederatedConnector):
             updated_at=updated_at,
             is_federated=True,
         )
+
+
+if __name__ == "__main__":
+    # Smoke test against a real tenant, without needing Onyx running.
+    #
+    #   export M365_ACCESS_TOKEN=<a delegated user token>
+    #   python -m onyx.federated_connectors.m365.federated_connector "quarterly report"
+    #
+    # The token must be a *delegated* one for a real signed-in user -- that is
+    # the whole point of the check. The quickest source is Graph Explorer
+    # (developer.microsoft.com/graph/graph-explorer): sign in as a test user,
+    # consent to Files.Read.All and Sites.Read.All, and copy the access token.
+    import sys
+
+    search_query = sys.argv[1] if len(sys.argv) > 1 else "report"
+    token = os.environ["M365_ACCESS_TOKEN"]
+
+    # Credentials are unused by the search path (only the user token authorizes
+    # it) but the constructor validates their shape.
+    test_connector = M365FederatedConnector(
+        {
+            "client_id": os.environ.get("M365_CLIENT_ID", "unused-for-search"),
+            "client_secret": os.environ.get("M365_CLIENT_SECRET", "unused-for-search"),
+            "tenant_id": os.environ.get("M365_TENANT_ID", "unused-for-search"),
+        }
+    )
+
+    # Filters are irrelevant here -- federated search never touches the index.
+    results = test_connector.search(
+        ChunkIndexRequest(
+            query=search_query,
+            filters=IndexFilters(access_control_list=None),
+        ),
+        entities={"search_scope": "all", "max_results": 10},
+        access_token=token,
+    )
+
+    print(f"\n{len(results)} results for {search_query!r}\n")
+    for result in results:
+        kind = result.metadata.get("type", "file")
+        # A chunk longer than the Graph summary is one we actually downloaded.
+        enriched = result.doc_summary != result.content
+        marker = "CONTENT" if enriched else "summary"
+        print(f"[{marker:>7}] ({kind}) {result.semantic_identifier}")
+        print(f"          {len(result.content)} chars: {result.content[:160]!r}\n")
