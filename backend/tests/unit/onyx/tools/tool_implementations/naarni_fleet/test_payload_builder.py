@@ -24,7 +24,6 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
     NaarniFleetTool,
 )
 
-
 # ─── _map_time_granularity ──────────────────────────────────────────────────
 
 

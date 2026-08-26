@@ -34,10 +34,7 @@ from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.models import NaarniUserToken
 from onyx.redis.redis_pool import get_redis_client
 from onyx.server.features.naarni_auth.token_refresh import NaarniRefreshFailed
-from onyx.server.features.naarni_auth.token_refresh import (
-    refresh_user_naarni_token,
-)
-
+from onyx.server.features.naarni_auth.token_refresh import refresh_user_naarni_token
 
 # Refresh any token whose row hasn't been touched in this long. The Naarni
 # access token TTL is ~6 hours (21_600 s). We refresh after 5 hours to give

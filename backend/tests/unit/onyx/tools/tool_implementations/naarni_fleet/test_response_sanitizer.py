@@ -11,7 +11,6 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
     NaarniFleetTool,
 )
 
-
 # ─── Bytes literal stripping ─────────────────────────────────────────────────
 
 
@@ -248,8 +247,7 @@ def test_sanitize_response_compacts_payload_size() -> None:
     raw_size = len(json.dumps(raw))
     sanitized_size = len(json.dumps(sanitized))
     assert sanitized_size < raw_size, (
-        f"sanitized payload ({sanitized_size}) should be smaller than "
-        f"raw ({raw_size})"
+        f"sanitized payload ({sanitized_size}) should be smaller than raw ({raw_size})"
     )
 
 

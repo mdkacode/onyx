@@ -15,7 +15,6 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
     NaarniFleetTool,
 )
 
-
 # ─── Wrapped (CRUD) responses should be flattened ───────────────────────────
 
 

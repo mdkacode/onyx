@@ -27,13 +27,9 @@ from onyx.db.naarni_auth import upsert_naarni_token
 from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
 from onyx.server.features.naarni_auth.token_refresh import naarni_device_uuid
-from onyx.server.features.naarni_auth.token_refresh import (
-    NaarniRefreshFailed,
-)
+from onyx.server.features.naarni_auth.token_refresh import NaarniRefreshFailed
 from onyx.server.features.naarni_auth.token_refresh import normalize_phone_number
-from onyx.server.features.naarni_auth.token_refresh import (
-    refresh_user_naarni_token,
-)
+from onyx.server.features.naarni_auth.token_refresh import refresh_user_naarni_token
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()

@@ -34,9 +34,7 @@ from onyx.db.models import User
 from onyx.db.naarni_auth import get_naarni_token_for_user
 from onyx.server.features.naarni_auth.token_refresh import naarni_device_uuid
 from onyx.server.features.naarni_auth.token_refresh import NaarniRefreshFailed
-from onyx.server.features.naarni_auth.token_refresh import (
-    refresh_user_naarni_token,
-)
+from onyx.server.features.naarni_auth.token_refresh import refresh_user_naarni_token
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import CustomToolDelta
 from onyx.server.query_and_chat.streaming_models import CustomToolStart
