@@ -1,4 +1,4 @@
-"""Unit tests for PdfGenerationTool.
+"""Unit tests for the document generation tool.
 
 These tests deliberately avoid invoking WeasyPrint directly, since its
 system dependencies (Cairo, Pango, GDK-pixbuf) are not present in every
@@ -13,27 +13,39 @@ from unittest.mock import patch
 import pytest
 
 from onyx.server.query_and_chat.placement import Placement
-from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
-from onyx.tools.tool_implementations.pdf_generation.models import Section
-from onyx.tools.tool_implementations.pdf_generation.models import TableData
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+from onyx.tools.tool_implementations.document_generation.disclaimer import (
+    DISCLAIMER_TEXT,
+)
+from onyx.tools.tool_implementations.document_generation.document_generation_tool import (
     _derive_user_label,
 )
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
-    _inline_format,
-)
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
-    _jinja_env,
-)
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+from onyx.tools.tool_implementations.document_generation.document_generation_tool import (
     _safe_color,
 )
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
+from onyx.tools.tool_implementations.document_generation.document_generation_tool import (
     PdfGenerationTool,
 )
+from onyx.tools.tool_implementations.document_generation.models import BrandConfig
+from onyx.tools.tool_implementations.document_generation.models import (
+    FinalDocumentGenerationResponse,
+)
+from onyx.tools.tool_implementations.document_generation.models import RenderedDocument
+from onyx.tools.tool_implementations.document_generation.models import Section
+from onyx.tools.tool_implementations.document_generation.models import TableData
+from onyx.tools.tool_implementations.document_generation.renderers import (
+    available_formats,
+)
+from onyx.tools.tool_implementations.document_generation.renderers.pdf import (
+    _inline_format,
+)
+from onyx.tools.tool_implementations.document_generation.renderers.pdf import _jinja_env
+from onyx.tools.tool_implementations.document_generation.renderers.pdf import (
+    PdfRenderer,
+)
 
-
-TOOL_MODULE = "onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool"
+TOOL_MODULE = (
+    "onyx.tools.tool_implementations.document_generation.document_generation_tool"
+)
 
 
 # ─── tool_definition ────────────────────────────────────────────────────────
@@ -44,14 +56,15 @@ def test_tool_definition_schema_shape() -> None:
     defn = tool.tool_definition()
 
     assert defn["type"] == "function"
-    assert defn["function"]["name"] == "generate_pdf"
+    assert defn["function"]["name"] == "generate_document"
 
     params = defn["function"]["parameters"]
     assert params["type"] == "object"
-    assert params["required"] == ["title", "sections"]
+    assert params["required"] == ["format", "title", "sections"]
 
     props = params["properties"]
     assert set(props.keys()) == {
+        "format",
         "title",
         "subtitle",
         "template",
@@ -66,6 +79,10 @@ def test_tool_definition_schema_shape() -> None:
     }
     assert props["template"]["enum"] == ["report", "brief"]
     assert props["page_size"]["enum"] == ["A4", "Letter"]
+    # Only formats renderable in this environment are offered, so the model is
+    # never handed an option that would fail at render time.
+    assert set(props["format"]["enum"]) == set(available_formats())
+    assert {"docx", "csv", "xlsx"}.issubset(set(props["format"]["enum"]))
 
     section_schema = props["sections"]["items"]
     assert section_schema["required"] == ["heading"]
@@ -96,7 +113,7 @@ def test_inline_format_converts_bold_and_code() -> None:
 
 def test_inline_format_empty_string() -> None:
     assert _inline_format("") == ""
-    assert _inline_format(None) == ""  # type: ignore[arg-type]
+    assert _inline_format(None) == ""  # ty: ignore[invalid-argument-type]
 
 
 def test_inline_format_code_inside_escaped_html() -> None:
@@ -216,18 +233,23 @@ def test_brief_template_renders_without_toc_or_cover() -> None:
 # ─── is_available ────────────────────────────────────────────────────────────
 
 
-def test_is_available_true_when_weasyprint_imports() -> None:
+def test_tool_is_available_whenever_any_format_renders() -> None:
+    """The tool no longer disables itself when WeasyPrint is missing.
+
+    It used to be PDF-only, so a dev box without Cairo/Pango lost the whole
+    capability. DOCX/CSV/XLSX are pure Python, so only PDF can drop out.
+    """
     db_session = MagicMock()
-    with patch(f"{TOOL_MODULE}.logger"):
-        # Stub `import weasyprint` to succeed inside the method.
-        with patch.dict("sys.modules", {"weasyprint": MagicMock()}, clear=False):
-            assert PdfGenerationTool.is_available(db_session) is True
+    assert PdfGenerationTool.is_available(db_session) is True
 
 
-def test_is_available_false_when_weasyprint_oserror() -> None:
-    db_session = MagicMock()
-
-    original_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__  # type: ignore[index]
+def test_pdf_renderer_reports_unavailable_when_weasyprint_oserror() -> None:
+    """The WeasyPrint availability check moved down to the PDF renderer."""
+    original_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__  # type: ignore[union-attr]
+    )
 
     def fake_import(name: str, *args: object, **kwargs: object) -> object:
         if name == "weasyprint":
@@ -235,33 +257,38 @@ def test_is_available_false_when_weasyprint_oserror() -> None:
         return original_import(name, *args, **kwargs)  # type: ignore[operator]
 
     with patch("builtins.__import__", side_effect=fake_import):
-        assert PdfGenerationTool.is_available(db_session) is False
+        assert PdfRenderer.is_available() is False
+
+
+def test_unavailable_format_is_not_offered_to_the_model() -> None:
+    with patch.object(PdfRenderer, "is_available", return_value=False):
+        tool = PdfGenerationTool(tool_id=1, emitter=MagicMock())
+        assert (
+            "pdf"
+            not in tool.tool_definition()["function"]["parameters"]["properties"][
+                "format"
+            ]["enum"]
+        )
 
 
 # ─── run: end-to-end with WeasyPrint stubbed ─────────────────────────────────
 
 
-def test_run_happy_path_saves_file_and_emits_final_packet() -> None:
+def test_run_happy_path_saves_file_and_returns_download_url() -> None:
+    """Runs a real DOCX render -- no stubbing of the renderer at all."""
     emitter = MagicMock()
     tool = PdfGenerationTool(tool_id=7, emitter=emitter)
 
     fake_file_store = MagicMock()
     fake_file_store.save_file.return_value = "file-abc-123"
 
-    with (
-        patch.object(
-            PdfGenerationTool,
-            "_render_pdf",
-            return_value=(b"%PDF-1.4 stub bytes", 3),
-        ),
-        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
-    ):
+    with patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store):
         response = tool.run(
             placement=Placement(turn_index=0),
             override_kwargs=None,
+            format="docx",
             title="Q1 Review",
             subtitle="Draft",
-            template="report",
             sections=[
                 {
                     "heading": "Executive Summary",
@@ -270,33 +297,145 @@ def test_run_happy_path_saves_file_and_emits_final_packet() -> None:
                 },
                 {"heading": "Next Steps", "body": "Ship it."},
             ],
-            include_toc=True,
-            page_size="A4",
         )
 
-    # File store was called with the correct origin + MIME type
     save_call = fake_file_store.save_file.call_args
     assert save_call.kwargs["file_origin"].value == "generated_report"
-    assert save_call.kwargs["file_type"] == "application/pdf"
-    assert save_call.kwargs["display_name"] == "Q1 Review.pdf"
+    assert save_call.kwargs["display_name"] == "Q1 Review.docx"
+    assert "wordprocessingml" in save_call.kwargs["file_type"]
 
-    # Final packet emitted (the tool emits PdfGenerationFinal, then a
-    # CustomToolDelta for the download button, so search all emitted packets).
-    final_packets = [
+    # The download button in chat is driven by this packet, so losing it would
+    # silently strip the only affordance most users see.
+    deltas = [
+        call.args[0]
+        for call in emitter.emit.call_args_list
+        if call.args[0].obj.type == "custom_tool_delta"
+    ]
+    assert len(deltas) == 1
+    assert deltas[0].obj.file_ids == ["file-abc-123"]
+
+    # `rich_response` is a wide union; narrow before touching format-specific
+    # fields so the assertion is checked rather than assumed.
+    rich = response.rich_response
+    assert isinstance(rich, FinalDocumentGenerationResponse)
+    assert rich.format == "docx"
+    assert "file-abc-123" in response.llm_facing_response
+
+
+def test_run_records_owner_so_only_they_can_download() -> None:
+    """`file_metadata["user_id"]` is the *only* thing gating the later download.
+
+    Generated files never land in ChatMessage.files, so if this metadata is
+    missing the file is either unreachable or reachable by the wrong person
+    (see `_user_can_access_generated_report`).
+    """
+    user = MagicMock()
+    user.id = "user-uuid-1"
+    user.email = "mayank@naarni.com"
+    tool = PdfGenerationTool(tool_id=1, emitter=MagicMock(), user=user)
+
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "fid"
+
+    with patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store):
+        tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            format="docx",
+            title="Owned",
+            sections=[{"heading": "S", "body": "b"}],
+        )
+
+    assert fake_file_store.save_file.call_args.kwargs["file_metadata"] == {
+        "user_id": "user-uuid-1"
+    }
+
+
+def test_run_emits_legacy_pdf_packet_only_for_pdf() -> None:
+    """PDF keeps emitting PdfGenerationFinal; new formats do not.
+
+    Nothing in web/src consumes that packet, so it is preserved for PDF purely
+    to avoid changing existing behaviour rather than extended to new formats.
+    """
+    stub_renderer = MagicMock()
+    stub_renderer.render.return_value = RenderedDocument(
+        content=b"%PDF-1.4 stub",
+        mime_type="application/pdf",
+        extension="pdf",
+        unit_count=3,
+        unit_label="pages",
+    )
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "file-pdf-1"
+
+    emitter = MagicMock()
+    tool = PdfGenerationTool(tool_id=1, emitter=emitter)
+
+    with (
+        patch(f"{TOOL_MODULE}.get_renderer", return_value=stub_renderer),
+        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
+    ):
+        response = tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            format="pdf",
+            title="Q1 Review",
+            sections=[{"heading": "S", "body": "b"}],
+        )
+
+    finals = [
         call.args[0]
         for call in emitter.emit.call_args_list
         if call.args[0].obj.type == "pdf_generation_final"
     ]
-    assert len(final_packets) == 1
-    packet = final_packets[0]
-    assert packet.obj.pdf.file_id == "file-abc-123"
-    assert packet.obj.pdf.page_count == 3
-    assert packet.obj.pdf.title == "Q1 Review"
-
-    # ToolResponse shape
-    assert response.rich_response is not None
-    assert "file-abc-123" in response.llm_facing_response
+    assert len(finals) == 1
+    assert finals[0].obj.pdf.page_count == 3
     assert "3-page" in response.llm_facing_response
+
+
+def test_run_does_not_emit_pdf_packet_for_docx() -> None:
+    emitter = MagicMock()
+    tool = PdfGenerationTool(tool_id=1, emitter=emitter)
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "fid"
+
+    with patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store):
+        tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            format="docx",
+            title="T",
+            sections=[{"heading": "S"}],
+        )
+
+    assert not [
+        c
+        for c in emitter.emit.call_args_list
+        if c.args[0].obj.type == "pdf_generation_final"
+    ]
+
+
+def test_run_surfaces_renderer_notes_to_the_model() -> None:
+    """A lossy export must be reported, not silently returned."""
+    emitter = MagicMock()
+    tool = PdfGenerationTool(tool_id=1, emitter=emitter)
+    fake_file_store = MagicMock()
+    fake_file_store.save_file.return_value = "fid"
+
+    with patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store):
+        response = tool.run(
+            placement=Placement(turn_index=0),
+            override_kwargs=None,
+            format="csv",
+            title="Data",
+            sections=[
+                {"heading": "One", "table": {"headers": ["a"], "rows": [["1"]]}},
+                {"heading": "Two", "table": {"headers": ["b"], "rows": [["2"]]}},
+            ],
+        )
+
+    assert "Also tell the user" in response.llm_facing_response
+    assert "first of 2" in response.llm_facing_response
 
 
 def test_run_rejects_request_with_no_valid_sections() -> None:
@@ -305,33 +444,38 @@ def test_run_rejects_request_with_no_valid_sections() -> None:
         tool.run(
             placement=Placement(turn_index=0),
             override_kwargs=None,
+            format="docx",
             title="Empty",
             sections=[{"body": "no heading"}],
         )
 
 
-def test_run_invalid_template_falls_back_to_report() -> None:
-    emitter = MagicMock()
-    tool = PdfGenerationTool(tool_id=1, emitter=emitter)
-    fake_file_store = MagicMock()
-    fake_file_store.save_file.return_value = "fid"
-
-    with (
-        patch.object(PdfGenerationTool, "_render_pdf", return_value=(b"%PDF-", 1)),
-        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
-        patch.object(
-            PdfGenerationTool, "_render_html", wraps=PdfGenerationTool._render_html
-        ) as spy,
-    ):
+def test_run_rejects_unknown_format() -> None:
+    tool = PdfGenerationTool(tool_id=1, emitter=MagicMock())
+    with pytest.raises(ValueError, match="Available formats"):
         tool.run(
             placement=Placement(turn_index=0),
             override_kwargs=None,
+            format="pages",
             title="T",
-            template="bogus",
             sections=[{"heading": "S"}],
         )
-    # Fell back to 'report'
-    assert spy.call_args.kwargs["template_name"] == "report"
+
+
+def test_invalid_template_falls_back_to_report() -> None:
+    tool = PdfGenerationTool(tool_id=1, emitter=MagicMock())
+    spec = tool._build_spec(
+        {"title": "T", "template": "bogus", "sections": [{"heading": "S"}]}
+    )
+    assert spec.template == "report"
+
+
+def test_invalid_page_size_falls_back_to_a4() -> None:
+    tool = PdfGenerationTool(tool_id=1, emitter=MagicMock())
+    spec = tool._build_spec(
+        {"title": "T", "page_size": "A0", "sections": [{"heading": "S"}]}
+    )
+    assert spec.page_size == "A4"
 
 
 # ─── _safe_color: hex validation (CSS injection defense) ────────────────────
@@ -466,7 +610,7 @@ def test_build_brand_ignores_invalid_colors() -> None:
 
 
 def test_report_template_renders_watermark_tiles() -> None:
-    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+    from onyx.tools.tool_implementations.document_generation.models import BrandConfig
 
     sections = [Section(heading="Intro", body="Hello")]
     brand = BrandConfig(watermark_text="NaArNi · testuser")
@@ -489,7 +633,7 @@ def test_report_template_renders_watermark_tiles() -> None:
 
 
 def test_report_template_omits_watermark_when_disabled() -> None:
-    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+    from onyx.tools.tool_implementations.document_generation.models import BrandConfig
 
     sections = [Section(heading="Intro", body="Hello")]
     brand = BrandConfig(watermark_text=None)
@@ -509,7 +653,7 @@ def test_report_template_omits_watermark_when_disabled() -> None:
 
 
 def test_brief_template_renders_watermark_tiles() -> None:
-    from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
+    from onyx.tools.tool_implementations.document_generation.models import BrandConfig
 
     sections = [Section(heading="Summary", body="Short")]
     brand = BrandConfig(watermark_text="NaArNi · testuser")
@@ -530,69 +674,82 @@ def test_brief_template_renders_watermark_tiles() -> None:
 # ─── run: threads watermark/color params end-to-end ────────────────────────
 
 
-def test_run_threads_prompt_color_and_watermark_through_to_template() -> None:
-    emitter = MagicMock()
+def test_prompt_colors_and_watermark_reach_the_renderer() -> None:
+    """Brand overrides now land on the DocumentSpec handed to the renderer.
+
+    Previously asserted against rendered HTML; the spec is the real seam now
+    that every format consumes the same brand config.
+    """
     user = MagicMock()
     user.email = "testuser@example.com"
-    tool = PdfGenerationTool(tool_id=9, emitter=emitter, user=user)
+    tool = PdfGenerationTool(tool_id=9, emitter=MagicMock(), user=user)
 
-    fake_file_store = MagicMock()
-    fake_file_store.save_file.return_value = "fid"
+    spec = tool._build_spec(
+        {
+            "title": "Branded",
+            "sections": [{"heading": "Intro", "body": "Hi"}],
+            "primary_color": "#FF5722",
+            "watermark_text": "DRAFT",
+            "watermark_color": "#333333",
+        }
+    )
 
-    captured_html: list[str] = []
-
-    def fake_render_pdf(html_content: str) -> tuple[bytes, int]:
-        captured_html.append(html_content)
-        return (b"%PDF-1.4 stub", 2)
-
-    with (
-        patch.object(PdfGenerationTool, "_render_pdf", side_effect=fake_render_pdf),
-        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
-    ):
-        tool.run(
-            placement=Placement(turn_index=0),
-            override_kwargs=None,
-            title="Branded",
-            sections=[{"heading": "Intro", "body": "Hi"}],
-            primary_color="#FF5722",
-            watermark_text="DRAFT",
-            watermark_color="#333333",
-        )
-
-    html_content = captured_html[0]
-    # Primary color override made it into the stylesheet.
-    assert "#FF5722" in html_content
-    # Custom watermark text is tiled on the page.
-    assert html_content.count("DRAFT") >= 10
-    # Watermark color override applied.
-    assert "#333333" in html_content
+    assert spec.brand.primary_color == "#FF5722"
+    assert spec.brand.watermark_text == "DRAFT"
+    assert spec.brand.watermark_color == "#333333"
 
 
-def test_run_uses_default_watermark_with_user_when_unspecified() -> None:
-    emitter = MagicMock()
+def test_pdf_template_still_tiles_the_watermark() -> None:
+    """The rendered HTML remains the ultimate check for PDF watermarking."""
+    brand = BrandConfig(watermark_text="DRAFT", watermark_color="#333333")
+    html = _jinja_env.get_template("report.html.j2").render(
+        title="T",
+        subtitle=None,
+        sections=[Section(heading="Intro", body="Hi")],
+        brand=brand,
+        metadata=None,
+        include_toc=False,
+        page_size="A4",
+        generated_at="2026-04-21",
+        disclaimer=DISCLAIMER_TEXT,
+    )
+    assert html.count("DRAFT") >= 10
+    assert "#333333" in html
+
+
+def test_default_watermark_uses_the_authenticated_user() -> None:
     user = MagicMock()
     user.email = "first.last@example.com"
-    tool = PdfGenerationTool(tool_id=9, emitter=emitter, user=user)
+    tool = PdfGenerationTool(tool_id=9, emitter=MagicMock(), user=user)
 
-    fake_file_store = MagicMock()
-    fake_file_store.save_file.return_value = "fid"
+    spec = tool._build_spec({"title": "T", "sections": [{"heading": "S"}]})
 
-    captured_html: list[str] = []
+    assert spec.brand.watermark_text == "NaArNi · first.last"
 
-    def fake_render_pdf(html_content: str) -> tuple[bytes, int]:
-        captured_html.append(html_content)
-        return (b"%PDF-1.4 stub", 1)
 
-    with (
-        patch.object(PdfGenerationTool, "_render_pdf", side_effect=fake_render_pdf),
-        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=fake_file_store),
-    ):
-        tool.run(
-            placement=Placement(turn_index=0),
-            override_kwargs=None,
-            title="Auto-watermark",
-            sections=[{"heading": "Intro", "body": "Hi"}],
-        )
+def test_watermark_cannot_be_disabled_by_an_empty_string() -> None:
+    """An un-watermarked document must not be reachable from prompt input."""
+    user = MagicMock()
+    user.email = "first.last@example.com"
+    tool = PdfGenerationTool(tool_id=9, emitter=MagicMock(), user=user)
 
-    html_content = captured_html[0]
-    assert "NaArNi · first.last" in html_content
+    spec = tool._build_spec(
+        {"title": "T", "sections": [{"heading": "S"}], "watermark_text": "   "}
+    )
+
+    assert spec.brand.watermark_text == "NaArNi · first.last"
+
+
+def test_pdf_disclaimer_is_rendered_into_the_template() -> None:
+    html = _jinja_env.get_template("report.html.j2").render(
+        title="T",
+        subtitle=None,
+        sections=[Section(heading="Intro", body="Hi")],
+        brand=BrandConfig(),
+        metadata=None,
+        include_toc=False,
+        page_size="A4",
+        generated_at="2026-04-21",
+        disclaimer=DISCLAIMER_TEXT,
+    )
+    assert DISCLAIMER_TEXT in html

@@ -1,16 +1,24 @@
-import html
+"""One tool that produces PDF, Word, CSV, or XLSX from structured content.
+
+Deliberately a single tool with a `format` argument rather than one tool per
+format. Three near-identical tool descriptions force the model to discriminate
+on wording alone, and "make me a report" gives it no signal; a format enum
+turns the choice into an argument filled straight from the user's own words.
+
+NOTE ON THE CLASS NAME: `PdfGenerationTool` is historical and no longer
+describes what this does. It is retained because `tool.in_code_tool_id` in the
+database holds the literal string "PdfGenerationTool", and `BUILT_IN_TOOL_MAP`
+is keyed on `cls.__name__` -- renaming the class would orphan the existing tool
+row and detach it from every persona it is attached to. The user-visible and
+LLM-visible names come from NAME/DISPLAY_NAME below and are free to differ.
+"""
+
 import io
 import json
 import re
-from datetime import datetime
-from datetime import timezone
-from pathlib import Path
 from typing import Any
 from typing import cast
 
-from jinja2 import Environment
-from jinja2 import FileSystemLoader
-from jinja2 import select_autoescape
 from sqlalchemy.orm import Session
 from typing_extensions import override
 
@@ -28,26 +36,23 @@ from onyx.server.query_and_chat.streaming_models import Packet
 from onyx.server.query_and_chat.streaming_models import PdfGenerationFinal
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolResponse
-from onyx.tools.tool_implementations.pdf_generation.models import BrandConfig
-from onyx.tools.tool_implementations.pdf_generation.models import DocMetadata
-from onyx.tools.tool_implementations.pdf_generation.models import (
-    FinalPdfGenerationResponse,
+from onyx.tools.tool_implementations.document_generation.models import BrandConfig
+from onyx.tools.tool_implementations.document_generation.models import DocMetadata
+from onyx.tools.tool_implementations.document_generation.models import DocumentSpec
+from onyx.tools.tool_implementations.document_generation.models import (
+    FinalDocumentGenerationResponse,
 )
-from onyx.tools.tool_implementations.pdf_generation.models import Section
-from onyx.tools.tool_implementations.pdf_generation.models import TableData
+from onyx.tools.tool_implementations.document_generation.models import Section
+from onyx.tools.tool_implementations.document_generation.models import TableData
+from onyx.tools.tool_implementations.document_generation.renderers import (
+    available_formats,
+)
+from onyx.tools.tool_implementations.document_generation.renderers import get_renderer
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
 
-
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
 DEFAULT_BRAND = BrandConfig()
-
-# Matches `code` spans (non-greedy, single backticks, non-empty).
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
-# Matches **bold** spans.
-_INLINE_BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
 
 # Strict hex color validator. The LLM interpolates these values directly into
 # <style> blocks, so a lax validator would open a CSS injection channel
@@ -83,37 +88,25 @@ def _derive_user_label(user: User | None) -> str | None:
     return local or None
 
 
-def _inline_format(text: str) -> str:
-    """Escape HTML, then re-apply inline **bold** and `code` markers.
-
-    The Jinja template marks the output `| safe`, so we must escape raw HTML
-    ourselves to prevent injection from LLM-supplied content.
-    """
-    if not text:
-        return ""
-    escaped = html.escape(text)
-    escaped = _INLINE_CODE_RE.sub(r"<code>\1</code>", escaped)
-    escaped = _INLINE_BOLD_RE.sub(r"<strong>\1</strong>", escaped)
-    return escaped
-
-
-_jinja_env = Environment(
-    loader=FileSystemLoader(str(TEMPLATES_DIR)),
-    autoescape=select_autoescape(["html", "htm", "xml"]),
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
-_jinja_env.filters["inline_format"] = _inline_format
-
-
 class PdfGenerationTool(Tool[None]):
-    NAME = "generate_pdf"
+    NAME = "generate_document"
     DESCRIPTION = (
-        "Generates a professional, downloadable PDF document from structured content. "
-        "Use when the user explicitly asks to create, export, save, or download a PDF "
-        "report, document, brief, or summary."
+        "Generates a professional, downloadable document from structured content "
+        "and returns a download link. Supported formats: "
+        "pdf (polished, read-only report), "
+        "docx (editable Word document), "
+        "csv (single table of data), "
+        "xlsx (spreadsheet, one sheet per table). "
+        "Use whenever the user asks to create, generate, export, save, download, "
+        "or 'send me' a document, report, brief, summary, spreadsheet, or data "
+        "export — including when they ask for the current conversation or a "
+        "previous answer to be turned into a file. Pick the format from the "
+        "user's own words ('Word doc' -> docx, 'spreadsheet' -> xlsx, "
+        "'CSV' -> csv, 'PDF' -> pdf); default to pdf when they just say "
+        "'document' or 'report'. csv and xlsx require at least one section "
+        "containing a table."
     )
-    DISPLAY_NAME = "PDF Generation"
+    DISPLAY_NAME = "Document Generation"
 
     def __init__(
         self,
@@ -143,23 +136,17 @@ class PdfGenerationTool(Tool[None]):
 
     @override
     @classmethod
-    def is_available(cls, db_session: Session) -> bool:
-        """Available iff the WeasyPrint Python package can be imported.
+    def is_available(cls, db_session: Session) -> bool:  # noqa: ARG003
+        """Available as long as at least one format can be rendered.
 
-        The system libraries (Cairo, Pango, GDK-pixbuf) are present in the
-        backend Docker image but may be missing in local dev venvs.
+        Only PDF can be unavailable (WeasyPrint needs system libraries absent
+        from some dev venvs); DOCX/CSV/XLSX are pure Python. So unlike the
+        former PDF-only tool, this effectively never disables itself.
         """
-        try:
-            import weasyprint  # noqa: F401
-        except (ImportError, OSError) as exc:
-            logger.warning(
-                "PdfGenerationTool unavailable: weasyprint cannot be imported (%s)",
-                exc,
-            )
-            return False
-        return True
+        return bool(available_formats())
 
     def tool_definition(self) -> dict:
+        formats = available_formats()
         return {
             "type": "function",
             "function": {
@@ -168,6 +155,18 @@ class PdfGenerationTool(Tool[None]):
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": formats,
+                            "description": (
+                                "Output file format. pdf = polished read-only "
+                                "report. docx = editable Word document. "
+                                "csv = one table as plain CSV. xlsx = "
+                                "spreadsheet with one sheet per table. "
+                                "csv and xlsx ignore prose and require at "
+                                "least one table."
+                            ),
+                        },
                         "title": {
                             "type": "string",
                             "description": "Document title (specific, date-stamped).",
@@ -180,21 +179,31 @@ class PdfGenerationTool(Tool[None]):
                             "type": "string",
                             "enum": ["report", "brief"],
                             "description": (
-                                "report = full multi-section document with cover page "
-                                "and TOC. brief = compact one-pager."
+                                "Layout for pdf/docx. report = full "
+                                "multi-section document with cover page and "
+                                "TOC. brief = compact one-pager. Ignored for "
+                                "csv/xlsx."
                             ),
                         },
                         "sections": {
                             "type": "array",
                             "description": (
-                                "Ordered list of document sections. First section "
-                                "should be an Executive Summary, last should be "
-                                "Next Steps or Recommendations."
+                                "Ordered list of document sections. For prose "
+                                "formats the first section should be an "
+                                "Executive Summary and the last Next Steps or "
+                                "Recommendations. For csv/xlsx only the "
+                                "`table` of each section is used."
                             ),
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "heading": {"type": "string"},
+                                    "heading": {
+                                        "type": "string",
+                                        "description": (
+                                            "Section heading. Used as the "
+                                            "sheet name in xlsx."
+                                        ),
+                                    },
                                     "body": {
                                         "type": "string",
                                         "description": (
@@ -280,8 +289,8 @@ class PdfGenerationTool(Tool[None]):
                             "type": "string",
                             "description": (
                                 "Optional label for the diagonal watermark "
-                                "that appears on every page (e.g. 'DRAFT', "
-                                "'CONFIDENTIAL'). Defaults to "
+                                "that appears on every page of a pdf (e.g. "
+                                "'DRAFT', 'CONFIDENTIAL'). Defaults to "
                                 "'NaArNi · <user>'. The watermark is always "
                                 "rendered — it cannot be disabled."
                             ),
@@ -296,7 +305,7 @@ class PdfGenerationTool(Tool[None]):
                             ),
                         },
                     },
-                    "required": ["title", "sections"],
+                    "required": ["format", "title", "sections"],
                 },
             },
         }
@@ -319,10 +328,6 @@ class PdfGenerationTool(Tool[None]):
           1. Prompt-supplied overrides (`primary_color`, `secondary_color`,
              `watermark_text`, `watermark_color`) — validated, then applied.
           2. Otherwise inherit defaults from `DEFAULT_BRAND`.
-
-        The watermark default is "NaArNi · <user-local-part>" when we have an
-        authenticated user. An explicit empty string from the LLM disables
-        the watermark (user asked to opt out).
         """
         primary = _safe_color(
             llm_kwargs.get("primary_color"), DEFAULT_BRAND.primary_color
@@ -392,62 +397,14 @@ class PdfGenerationTool(Tool[None]):
             )
         return parsed
 
-    @staticmethod
-    def _render_html(
-        *,
-        template_name: str,
-        title: str,
-        subtitle: str | None,
-        sections: list[Section],
-        brand: BrandConfig,
-        metadata: DocMetadata | None,
-        include_toc: bool,
-        page_size: str,
-    ) -> str:
-        template = _jinja_env.get_template(f"{template_name}.html.j2")
-        return template.render(
-            title=title,
-            subtitle=subtitle,
-            sections=sections,
-            brand=brand,
-            metadata=metadata,
-            include_toc=include_toc,
-            page_size=page_size,
-            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        )
-
-    @staticmethod
-    def _render_pdf(html_content: str) -> tuple[bytes, int]:
-        """Render HTML to PDF bytes using WeasyPrint.
-
-        Lazy import so the tool module can be imported on machines without the
-        WeasyPrint system libraries installed (e.g. local Mac dev without brew).
-        """
-        from weasyprint import HTML  # lazy: requires system libs (Cairo/Pango)
-
-        document = HTML(string=html_content).render()
-        pdf_bytes = document.write_pdf()
-        page_count = len(document.pages)
-        if pdf_bytes is None:
-            raise RuntimeError("WeasyPrint returned no PDF bytes")
-        return pdf_bytes, page_count
-
-    def run(
-        self,
-        placement: Placement,
-        override_kwargs: None = None,  # noqa: ARG002
-        **llm_kwargs: Any,
-    ) -> ToolResponse:
+    def _build_spec(self, llm_kwargs: dict[str, Any]) -> DocumentSpec:
         title = (
-            cast(str, llm_kwargs.get("title", "Untitled Report")).strip()
-            or "Untitled Report"
+            cast(str, llm_kwargs.get("title", "Untitled Document")).strip()
+            or "Untitled Document"
         )
-        subtitle = cast(str | None, llm_kwargs.get("subtitle"))
         template_name = cast(str, llm_kwargs.get("template") or "report")
         if template_name not in ("report", "brief"):
             template_name = "report"
-        raw_sections = cast(list[Any], llm_kwargs.get("sections") or [])
-        include_toc = bool(llm_kwargs.get("include_toc", True))
         page_size = cast(str, llm_kwargs.get("page_size") or "A4")
         if page_size not in ("A4", "Letter"):
             page_size = "A4"
@@ -462,65 +419,80 @@ class PdfGenerationTool(Tool[None]):
                 confidentiality=metadata_raw.get("confidentiality"),
             )
 
-        sections = self._parse_sections(raw_sections)
+        sections = self._parse_sections(
+            cast(list[Any], llm_kwargs.get("sections") or [])
+        )
         if not sections:
             raise ValueError(
-                "PdfGenerationTool requires at least one section with a heading"
+                "generate_document requires at least one section with a heading"
             )
 
-        brand = self._build_brand(llm_kwargs)
+        return DocumentSpec(
+            title=title,
+            subtitle=cast(str | None, llm_kwargs.get("subtitle")),
+            sections=sections,
+            brand=self._build_brand(llm_kwargs),
+            metadata=metadata,
+            template=template_name,
+            include_toc=bool(llm_kwargs.get("include_toc", True)),
+            page_size=page_size,
+        )
+
+    def run(
+        self,
+        placement: Placement,
+        override_kwargs: None = None,  # noqa: ARG002
+        **llm_kwargs: Any,
+    ) -> ToolResponse:
+        fmt = cast(str, llm_kwargs.get("format") or "pdf").strip().lower()
+        renderer = get_renderer(fmt)
+        spec = self._build_spec(llm_kwargs)
 
         try:
-            html_content = self._render_html(
-                template_name=template_name,
-                title=title,
-                subtitle=subtitle,
-                sections=sections,
-                brand=brand,
-                metadata=metadata,
-                include_toc=include_toc,
-                page_size=page_size,
-            )
-            pdf_bytes, page_count = self._render_pdf(html_content)
+            rendered = renderer.render(spec)
+        except ValueError:
+            # Renderer-level validation (e.g. csv with no table). The message is
+            # written for the model to act on, so let it through unwrapped.
+            raise
         except Exception:
-            logger.exception("Error generating PDF document")
+            logger.exception("Error generating %s document", fmt)
             raise
 
-        size_bytes = len(pdf_bytes)
-        buffer = io.BytesIO(pdf_bytes)
-
         file_store = get_default_file_store()
-        # The generated PDF is handed to the user as a bare /chat/file/{id}
-        # link in the message body, so it never lands in ChatMessage.files.
-        # Record the owner here — it is the only thing authorizing the later
-        # download (see _user_can_access_generated_report).
+        # The generated file is handed to the user as a bare /chat/file/{id}
+        # link, so it never lands in ChatMessage.files. Record the owner here —
+        # it is the only thing authorizing the later download (see
+        # _user_can_access_generated_report).
         file_metadata = {"user_id": str(self._user.id)} if self._user else None
         file_id = file_store.save_file(
-            content=buffer,
-            display_name=f"{title}.pdf",
+            content=io.BytesIO(rendered.content),
+            display_name=f"{spec.title}.{rendered.extension}",
             file_origin=FileOrigin.GENERATED_REPORT,
-            file_type="application/pdf",
+            file_type=rendered.mime_type,
             file_metadata=file_metadata,
         )
         file_url = build_frontend_file_url(file_id)
 
-        generated_pdf = GeneratedPdf(
-            file_id=file_id,
-            url=file_url,
-            title=title,
-            page_count=page_count,
-            size_bytes=size_bytes,
-        )
-
-        self.emitter.emit(
-            Packet(
-                placement=placement,
-                obj=PdfGenerationFinal(pdf=generated_pdf),
+        # Legacy packet, kept for PDF only so existing behaviour is unchanged.
+        # Nothing in web/src consumes it today — the download button comes from
+        # the CustomToolDelta below — so it is not extended to new formats.
+        if fmt == "pdf":
+            self.emitter.emit(
+                Packet(
+                    placement=placement,
+                    obj=PdfGenerationFinal(
+                        pdf=GeneratedPdf(
+                            file_id=file_id,
+                            url=file_url,
+                            title=spec.title,
+                            page_count=rendered.unit_count,
+                            size_bytes=rendered.size_bytes,
+                        )
+                    ),
+                )
             )
-        )
 
-        # Emit CustomToolDelta with file_ids so the CustomToolRenderer
-        # shows a download button in the chat timeline.
+        # Drives the download button in the chat timeline via CustomToolRenderer.
         self.emitter.emit(
             Packet(
                 placement=placement,
@@ -533,30 +505,45 @@ class PdfGenerationTool(Tool[None]):
             )
         )
 
-        final_response = FinalPdfGenerationResponse(
+        final_response = FinalDocumentGenerationResponse(
             file_id=file_id,
             file_url=file_url,
-            title=title,
-            page_count=page_count,
-            size_bytes=size_bytes,
+            title=spec.title,
+            format=fmt,
+            unit_count=rendered.unit_count,
+            unit_label=rendered.unit_label,
+            size_bytes=rendered.size_bytes,
+            notes=rendered.notes,
         )
 
+        # The chat UI renders a download button from the CustomToolDelta above,
+        # but that button is not present on every surface (Slack, the widget),
+        # so the model is also told to print the absolute URL as plain text.
         full_download_url = build_full_frontend_file_url(file_id)
+        message = (
+            f"Generated a {rendered.unit_count}-{rendered.unit_label.rstrip('s')} "
+            f"{fmt.upper()} titled '{spec.title}'. "
+            f"In your reply to the user, you MUST print the following full "
+            f"download URL as PLAIN TEXT on its own line (NOT as a markdown "
+            f"link, NOT wrapped in backticks, NOT modified in any way) so the "
+            f"user can copy and paste it into their browser to download the "
+            f"file:\n\n{full_download_url}"
+        )
+        if rendered.notes:
+            # e.g. "CSV kept only the first of 3 tables" -- the user needs to
+            # hear this, so it is put in front of the model rather than logged.
+            message += "\n\nAlso tell the user: " + " ".join(rendered.notes)
+
         llm_facing_response = json.dumps(
             {
                 "file_id": file_id,
-                "title": title,
-                "page_count": page_count,
-                "size_bytes": size_bytes,
+                "title": spec.title,
+                "format": fmt,
+                rendered.unit_label: rendered.unit_count,
+                "size_bytes": rendered.size_bytes,
                 "download_url": full_download_url,
-                "message": (
-                    f"Generated a {page_count}-page PDF titled '{title}'. "
-                    f"In your reply to the user, you MUST print the following "
-                    f"full download URL as PLAIN TEXT on its own line (NOT as "
-                    f"a markdown link, NOT wrapped in backticks, NOT modified "
-                    f"in any way) so the user can copy and paste it into their "
-                    f"browser to download the file:\n\n{full_download_url}"
-                ),
+                "notes": rendered.notes,
+                "message": message,
             }
         )
 

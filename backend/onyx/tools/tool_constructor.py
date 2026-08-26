@@ -36,6 +36,9 @@ from onyx.tools.tool_implementations.coding_agent.coding_agent_tool import (
 from onyx.tools.tool_implementations.custom.custom_tool import (
     build_custom_tools_from_openapi_schema_and_headers,
 )
+from onyx.tools.tool_implementations.document_generation.document_generation_tool import (
+    PdfGenerationTool,
+)
 from onyx.tools.tool_implementations.file_reader.file_reader_tool import FileReaderTool
 from onyx.tools.tool_implementations.images.image_generation_tool import (
     ImageGenerationTool,
@@ -46,9 +49,6 @@ from onyx.tools.tool_implementations.naarni_fleet.naarni_fleet_tool import (
     NaarniFleetTool,
 )
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
-from onyx.tools.tool_implementations.pdf_generation.pdf_generation_tool import (
-    PdfGenerationTool,
-)
 from onyx.tools.tool_implementations.pptx_generator.pptx_generator_tool import (
     PptxGeneratorTool,
 )

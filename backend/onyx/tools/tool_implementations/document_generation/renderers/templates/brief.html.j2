@@ -13,6 +13,13 @@
         font-size: 8pt;
         color: #888;
     }
+    /* See report.html.j2 -- server-side constant, no double quotes. */
+    @bottom-left {
+        content: "{{ disclaimer }}";
+        font-family: {{ brand.font_family }};
+        font-size: 7pt;
+        color: #999;
+    }
 }
 
 body {
@@ -121,6 +128,13 @@ code {
     font-size: 9pt;
 }
 
+.disclaimer {
+    margin-top: 6pt;
+    font-size: 8pt;
+    font-style: italic;
+    color: #999;
+}
+
 .footer {
     margin-top: 18pt;
     padding-top: 6pt;
@@ -225,6 +239,7 @@ code {
 
 <div class="footer">
     {{ generated_at }}
+    <div class="disclaimer">{{ disclaimer }}</div>
 </div>
 
 </body>

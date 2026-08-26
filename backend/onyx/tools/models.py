@@ -23,11 +23,11 @@ from onyx.file_store.models import maybe_materialize_lazy_content
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import CustomToolErrorInfo
 from onyx.server.query_and_chat.streaming_models import GeneratedImage
+from onyx.tools.tool_implementations.document_generation.models import (
+    FinalDocumentGenerationResponse,
+)
 from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tools.tool_implementations.memory.models import MemoryToolResponse
-from onyx.tools.tool_implementations.pdf_generation.models import (
-    FinalPdfGenerationResponse,
-)
 from onyx.tools.tool_implementations.pptx_generator.models import (
     FinalPptxGenerationResponse,
 )
@@ -97,8 +97,8 @@ class ToolResponse(BaseModel):
         FinalImageGenerationResponse
         # This comes from PPTX generation
         | FinalPptxGenerationResponse
-        # This comes from PDF generation
-        | FinalPdfGenerationResponse
+        # This comes from document generation (pdf / docx / csv / xlsx)
+        | FinalDocumentGenerationResponse
         # This comes from internal search / web search, search docs need to be saved, already emitted by the tool
         | SearchDocsResponse
         # This comes from the memory tool, memory needs to be persisted to the database

@@ -19,6 +19,16 @@
         font-size: 9pt;
         color: #888;
     }
+    /* AI-provenance notice, repeated on every page so it survives the
+       document being excerpted or partially printed. `disclaimer` is a
+       server-side constant, never LLM input -- it must not contain a
+       double quote, which would terminate this CSS string. */
+    @bottom-left {
+        content: "{{ disclaimer }}";
+        font-family: {{ brand.font_family }};
+        font-size: 7.5pt;
+        color: #999;
+    }
 }
 
 body {
@@ -197,6 +207,13 @@ pre {
     page-break-before: always;
 }
 
+.disclaimer {
+    margin-top: 6pt;
+    font-size: 8pt;
+    font-style: italic;
+    color: #999;
+}
+
 .footer {
     margin-top: 48pt;
     padding-top: 12pt;
@@ -330,6 +347,7 @@ pre {
 
 <div class="footer">
     Generated on {{ generated_at }}
+    <div class="disclaimer">{{ disclaimer }}</div>
 </div>
 
 </body>
