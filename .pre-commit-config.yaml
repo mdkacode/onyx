@@ -206,9 +206,15 @@ repos:
       # This is a preview package - if it breaks:
       #   1. Try updating: cd web && bun update @typescript/native-preview
       #   2. Or fallback to tsc: replace 'tsgo' with 'tsc' below
+      # `next typegen` regenerates .next/types, which is where Next puts the
+      # RouteImpl<> types backing typed routes. Without it every router.push()
+      # to a real route fails to typecheck on a fresh checkout that has never
+      # been built -- errors that look like broken links but are not. It takes
+      # ~0.4s and is run unconditionally because route types go stale whenever
+      # a route is added or moved.
       - id: typescript-check
         name: TypeScript type check
-        entry: bash -c 'cd web && bunx tsgo --noEmit --project tsconfig.types.json'
+        entry: bash -c 'cd web && bunx next typegen && bunx tsgo --noEmit --project tsconfig.types.json'
         language: system
         pass_filenames: false
         files: ^web/.*\.(ts|tsx)$

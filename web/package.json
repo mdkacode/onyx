@@ -12,7 +12,7 @@
     "start": "next start",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "types:check": "tsgo --noEmit --project tsconfig.types.json",
+    "types:check": "next typegen && tsgo --noEmit --project tsconfig.types.json",
     "format": "oxfmt src",
     "format:check": "oxfmt --check src",
     "playwright": "playwright test",

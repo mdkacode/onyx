@@ -15,7 +15,7 @@ export const INTERNET_SEARCH_TOOL_NAME = "run_internet_search";
 export const IMAGE_GENERATION_TOOL_NAME = "run_image_generation";
 export const PYTHON_TOOL_NAME = "run_python";
 export const OPEN_URL_TOOL_NAME = "open_url";
-export const PDF_GENERATION_TOOL_NAME = "generate_pdf";
+export const DOCUMENT_GENERATION_TOOL_NAME = "generate_document";
 
 // In-code tool IDs that also correspond to the tool's name when associated with a persona
 export const SEARCH_TOOL_ID = "SearchTool";
@@ -24,6 +24,9 @@ export const WEB_SEARCH_TOOL_ID = "WebSearchTool";
 export const PYTHON_TOOL_ID = "PythonTool";
 export const OPEN_URL_TOOL_ID = "OpenURLTool";
 export const FILE_READER_TOOL_ID = "FileReaderTool";
+// Historical name: this tool now generates PDF, DOCX, CSV, and XLSX. The ID is
+// the `in_code_tool_id` stored on the tool row, so it cannot be renamed without
+// orphaning the row and detaching the tool from every persona.
 export const PDF_GENERATION_TOOL_ID = "PdfGenerationTool";
 export const CODING_AGENT_TOOL_ID = "CodingAgentTool";
 
