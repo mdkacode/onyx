@@ -930,7 +930,7 @@ def fetch_chat_file(
         safe_name = raw_name.encode("ascii", "ignore").decode("ascii") or "download"
         encoded_name = urllib.parse.quote(raw_name, safe="")
         cache_headers["Content-Disposition"] = (
-            f'attachment; filename="{safe_name}"; ' f"filename*=UTF-8''{encoded_name}"
+            f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}"
         )
 
     if request.headers.get("if-none-match") == etag:
