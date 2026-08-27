@@ -276,7 +276,7 @@ export class NaarniChatWidget extends LitElement {
     citations?: ResolvedCitation[]
   ): string | TemplateResult {
     if (!citations?.length) return "";
-    const limit = OnyxChatWidget.CITATIONS_COLLAPSED_COUNT;
+    const limit = NaarniChatWidget.CITATIONS_COLLAPSED_COUNT;
     const visible = citations.slice(0, limit);
     const overflow = citations.slice(limit);
 
